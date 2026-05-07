@@ -93,6 +93,8 @@ RUN printf '%s\n' \
     'server {' \
     '    listen 80;' \
     '    server_name _;' \
+    '    # 允许下划线 header 透传：Codex/CLI 客户端会发送 session_id、conversation_id；nginx 默认 off 会在到达 FastAPI 前丢弃' \
+    '    underscores_in_headers on;' \
     '    root /usr/share/nginx/html;' \
     '    index index.html;' \
     '    client_max_body_size 100M;' \
