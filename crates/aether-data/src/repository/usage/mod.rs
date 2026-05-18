@@ -632,6 +632,9 @@ pub(crate) fn provider_api_key_usage_is_error(
 pub(crate) fn provider_api_key_usage_contribution(
     usage: &StoredRequestUsageAudit,
 ) -> Option<ProviderApiKeyUsageContribution> {
+    if matches!(usage.status.as_str(), "pending" | "streaming") {
+        return None;
+    }
     let key_id = usage
         .provider_api_key_id
         .as_deref()
@@ -945,6 +948,59 @@ mod tests {
         assert_eq!(contribution.total_cost_usd, 0.25);
         assert_eq!(contribution.total_response_time_ms, 120);
         assert_eq!(contribution.last_used_at_unix_secs, Some(123));
+    }
+
+    #[test]
+    fn provider_key_usage_contribution_skips_pending_states() {
+        let completed = StoredRequestUsageAudit::new(
+            "usage-1".to_string(),
+            "request-1".to_string(),
+            None,
+            None,
+            None,
+            None,
+            "OpenAI".to_string(),
+            "gpt-5".to_string(),
+            None,
+            Some("provider-1".to_string()),
+            None,
+            Some("provider-key-1".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            false,
+            12,
+            8,
+            20,
+            0.25,
+            0.25,
+            Some(200),
+            None,
+            None,
+            Some(120),
+            None,
+            "completed".to_string(),
+            "settled".to_string(),
+            123,
+            124,
+            Some(125),
+        )
+        .expect("usage should build");
+
+        let mut streaming = completed.clone();
+        streaming.status = "streaming".to_string();
+        streaming.billing_status = "pending".to_string();
+        assert!(provider_api_key_usage_contribution(&streaming).is_none());
+
+        let mut pending = completed;
+        pending.status = "pending".to_string();
+        pending.billing_status = "pending".to_string();
+        assert!(provider_api_key_usage_contribution(&pending).is_none());
     }
 
     #[test]
