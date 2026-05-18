@@ -31,7 +31,7 @@ Aether 是一个自托管的 AI API 网关，为团队和个人提供多租户�
   </picture>
 </p>
 
-页面预览: https://fawney19.github.io/Aether/
+页面预览: https://yinsansui.github.io/Aether/
 
 ## 部署
 
@@ -39,7 +39,7 @@ Aether 是一个自托管的 AI API 网关，为团队和个人提供多租户�
 
 ```bash
 # 1. 克隆代码
-git clone https://github.com/fawney19/Aether.git
+git clone https://github.com/yinsansui/Aether.git
 cd Aether
 
 # 2. 配置环境变量
@@ -59,7 +59,7 @@ docker compose -f docker-compose.sqlite.yml pull && docker compose -f docker-com
 
 ```bash
 cd Aether && cd Aether
-curl -fsSL https://raw.githubusercontent.com/fawney19/Aether/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/yinsansui/Aether/main/install.sh | sudo bash
 ```
 
 ## 本地开发
@@ -117,4 +117,4 @@ Aether Proxy 是配套的正向代理节点，部署在海外 VPS 上，为墙�
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=fawney19/Aether&type=Date)](https://star-history.com/#fawney19/Aether&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=yinsansui/Aether&type=Date)](https://star-history.com/#yinsansui/Aether&Date)

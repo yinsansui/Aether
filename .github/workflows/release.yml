@@ -15,8 +15,8 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
-  GHCR_IMAGE: fawney19/aether
-  DOCKERHUB_IMAGE: fawney19/aether
+  GHCR_IMAGE: yinsansui/aether
+  DOCKERHUB_IMAGE: yinsansui/aether
 
 jobs:
   preflight:
