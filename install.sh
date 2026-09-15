@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="${AETHER_REPO:-fawney19/Aether}"
+REPO="${AETHER_REPO:-yinsansui/Aether}"
 SOURCE_REF="${AETHER_SOURCE_REF:-main}"
 SOURCE_REF_EXPLICIT="false"
 if [[ -n "${AETHER_SOURCE_REF:-}" ]]; then
@@ -25,7 +25,7 @@ COMPOSE_DIR_EXPLICIT="false"
 if [[ -n "${AETHER_COMPOSE_DIR:-}" ]]; then
     COMPOSE_DIR_EXPLICIT="true"
 fi
-IMAGE_REPO="${AETHER_IMAGE_REPO:-ghcr.io/fawney19/aether}"
+IMAGE_REPO="${AETHER_IMAGE_REPO:-ghcr.io/yinsansui/aether}"
 APP_IMAGE="${AETHER_APP_IMAGE:-}"
 SERVICE_USER_EXPLICIT="false"
 SERVICE_GROUP_EXPLICIT="false"
@@ -85,7 +85,7 @@ Options:
                       beta resolves the latest tag like v0.7.0-beta.1
                       nightly resolves the rolling nightly build from main
   --version VERSION    Exact release tag to install, for example v0.7.0-rc.1 or nightly
-  --repo OWNER/REPO    GitHub repository to download from (default: fawney19/Aether)
+  --repo OWNER/REPO    GitHub repository to download from (default: yinsansui/Aether)
   --source-ref REF     Source branch/tag used for compose templates (default: main)
   --archive PATH       Install from a local release tarball instead of downloading
   --download-url URL   Download the release archive from this URL instead of GitHub
