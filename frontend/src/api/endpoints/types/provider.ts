@@ -190,6 +190,7 @@ export interface ChatPiiRedactionProviderConfig {
 
 export interface CodexProviderConfig {
   fingerprint_convergence_enabled?: boolean
+  compact_synthesis_enabled?: boolean
   [key: string]: unknown
 }
 
@@ -925,6 +926,7 @@ export interface ProviderWithEndpointsSummary {
   ops_configured: boolean  // 是否配置了扩展操作（余额监控等）
   ops_architecture_id?: string  // 扩展操作使用的架构 ID（如 cubence, anyrouter）
   codex_fingerprint_convergence_enabled?: boolean
+  codex_compact_synthesis_enabled?: boolean
   kiro_simulated_cache_enabled?: boolean
   responses_websocket_enabled?: boolean
   ops_quota_alert_enabled?: boolean

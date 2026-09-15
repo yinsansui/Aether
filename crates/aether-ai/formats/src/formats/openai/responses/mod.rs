@@ -2,6 +2,7 @@ use base64::{engine::general_purpose::STANDARD_NO_PAD, Engine as _};
 use serde_json::Value;
 
 pub mod codex;
+pub mod compact_synthesis;
 pub(crate) mod history;
 pub mod request;
 pub mod response;

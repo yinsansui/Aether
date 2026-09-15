@@ -204,6 +204,8 @@ pub(crate) struct AdminProviderCreateRequest {
     #[serde(default)]
     pub(crate) codex_fingerprint_convergence_enabled: Option<bool>,
     #[serde(default)]
+    pub(crate) codex_compact_synthesis_enabled: Option<bool>,
+    #[serde(default)]
     pub(crate) responses_websocket_enabled: Option<bool>,
     #[serde(default)]
     pub(crate) is_active: Option<bool>,
@@ -266,6 +268,8 @@ pub(crate) struct AdminProviderUpdateRequest {
     pub(crate) keep_priority_on_conversion: Option<bool>,
     #[serde(default)]
     pub(crate) codex_fingerprint_convergence_enabled: Option<bool>,
+    #[serde(default)]
+    pub(crate) codex_compact_synthesis_enabled: Option<bool>,
     #[serde(default)]
     pub(crate) responses_websocket_enabled: Option<bool>,
     #[serde(default)]

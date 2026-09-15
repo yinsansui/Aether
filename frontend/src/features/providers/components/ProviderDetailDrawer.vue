@@ -36,6 +36,7 @@
               :has-failover-rules="hasFailoverRules"
               :provider-proxy-node-name="getProviderProxyNodeName()"
               :saving-provider-proxy="savingProviderProxy"
+              @toggle-compact-synthesis="toggleCompactSynthesis"
               @toggle-format-conversion="toggleFormatConversion"
               @toggle-keep-priority-on-conversion="toggleKeepPriorityOnConversion"
               @open-failover-rules="failoverRulesDialogOpen = true"
@@ -1405,6 +1406,21 @@ async function toggleFormatConversion() {
     emit('refresh')
   } catch {
     showError(legacyT('切换格式转换失败'))
+  }
+}
+
+async function toggleCompactSynthesis() {
+  if (!provider.value) return
+  const newValue = !provider.value.codex_compact_synthesis_enabled
+  try {
+    const updated = await updateProvider(provider.value.id, {
+      codex_compact_synthesis_enabled: newValue,
+    })
+    applyProviderSnapshot(updated)
+    showSuccess(legacyT(newValue ? '已启用 Compact 协议合成' : '已禁用 Compact 协议合成'))
+    emit('refresh')
+  } catch {
+    showError(legacyT('切换 Compact 协议合成失败'))
   }
 }
 

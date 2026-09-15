@@ -277,6 +277,13 @@ pub(crate) async fn build_admin_update_provider_record(
         remove_codex_fingerprint_config(&mut config_map);
     }
 
+    if fields.contains("codex_compact_synthesis_enabled") {
+        let Some(enabled) = payload.codex_compact_synthesis_enabled else {
+            return Err("codex_compact_synthesis_enabled 必须是布尔值".to_string());
+        };
+        crate::provider_transport::set_codex_compact_synthesis_enabled(&mut config_map, enabled);
+    }
+
     for (field_name, payload_value) in [
         (
             PROVIDER_MAX_TRANSFER_COUNT_CONFIG_KEY,

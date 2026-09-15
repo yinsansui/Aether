@@ -70,12 +70,36 @@ fn gateway_report_from_surface(
     }
 }
 
+
+pub(crate) fn apply_compact_synthesis_to_client_body(
+    report_context: Option<&serde_json::Value>,
+    body_json: &mut serde_json::Value,
+) -> Result<(), crate::GatewayError> {
+    let synthesis_enabled =
+        aether_ai_formats::compact_synthesis_enabled_from_report_context(report_context);
+    let is_compact = aether_ai_formats::is_compact_operation_from_report_context(report_context);
+    if !synthesis_enabled || !is_compact {
+        return Ok(());
+    }
+    let model = report_context
+        .and_then(|ctx| {
+            ctx.get("mapped_model")
+                .or_else(|| ctx.get("model"))
+                .and_then(serde_json::Value::as_str)
+        })
+        .unwrap_or("unknown");
+    aether_ai_formats::synthesize_compaction_client_response(body_json, model, true, true)
+        .map(|_| ())
+        .map_err(crate::GatewayError::Internal)
+}
+
 pub(crate) fn build_local_success_outcome(
     trace_id: &str,
     decision: &GatewayControlDecision,
     payload: &GatewaySyncReportRequest,
-    body_json: Value,
+    mut body_json: Value,
 ) -> Result<LocalCoreSyncFinalizeOutcome, GatewayError> {
+    apply_compact_synthesis_to_client_body(payload.report_context.as_ref(), &mut body_json)?;
     let report_headers = payload.headers.clone();
     let (body_bytes, response_headers) =
         prepare_local_success_response_parts_impl(&payload.headers, &body_json)
@@ -114,9 +138,10 @@ pub(crate) fn build_local_success_outcome_with_conversion_report(
     trace_id: &str,
     decision: &GatewayControlDecision,
     payload: &GatewaySyncReportRequest,
-    client_body_json: Value,
+    mut client_body_json: Value,
     provider_body_json: Value,
 ) -> Result<LocalCoreSyncFinalizeOutcome, GatewayError> {
+    apply_compact_synthesis_to_client_body(payload.report_context.as_ref(), &mut client_body_json)?;
     let (body_bytes, response_headers) =
         prepare_local_success_response_parts_impl(&payload.headers, &client_body_json)
             .map_err(|err| GatewayError::Internal(err.to_string()))?;

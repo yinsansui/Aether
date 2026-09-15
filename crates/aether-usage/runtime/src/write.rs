@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use aether_ai_formats::UPSTREAM_IS_STREAM_KEY;
+use aether_ai_formats::{is_compact_operation_from_report_context, UPSTREAM_IS_STREAM_KEY};
 use aether_contracts::{ExecutionPlan, ExecutionTelemetry};
 use aether_data_contracts::repository::usage::{
     UpsertUsageRecord, UsageBodyCaptureState, LIVE_SESSION_METADATA_KEY,
@@ -278,6 +278,7 @@ pub fn build_lifecycle_usage_seed(
         api_format.as_deref(),
         endpoint_api_format.as_deref(),
         provider_request.as_ref(),
+        report_context,
     );
     let api_family = api_format
         .as_deref()
@@ -831,6 +832,7 @@ pub fn build_terminal_usage_context_seed(
         Some(client_contract.as_str()),
         Some(provider_contract.as_str()),
         request_capture.provider_request.as_ref(),
+        report_context,
     );
     let has_format_conversion = resolve_has_format_conversion(
         context,
@@ -1750,6 +1752,7 @@ fn build_usage_event_data_seed_with_detail(
             .provider_request
             .as_ref()
             .or_else(|| provider_request_body_ref_for_inference(plan, context)),
+        report_context,
     ));
     let api_family = api_format
         .as_deref()
@@ -2597,7 +2600,14 @@ fn infer_request_type_from_contracts(
     client_api_format: Option<&str>,
     provider_api_format: Option<&str>,
     provider_request: Option<&Value>,
+    report_context: Option<&Value>,
 ) -> String {
+    // Compact synthesis strips `compaction_trigger` before the upstream body is
+    // recorded. Prefer the planner's original compact classification so usage
+    // still shows session compaction after protocol conversion.
+    if is_compact_operation_from_report_context(report_context) {
+        return "compact".to_string();
+    }
     let empty_body = Value::Null;
     let provider_request = provider_request.unwrap_or(&empty_body);
     for api_format in [provider_api_format, client_api_format]
@@ -3837,6 +3847,91 @@ mod tests {
                 .and_then(|metadata| metadata.get("websocket_transport")),
             Some(&json!("responses"))
         );
+    }
+
+    #[test]
+    fn compact_synthesis_stripped_upstream_body_still_records_compact_request_type() {
+        let plan = ExecutionPlan {
+            request_id: "req-compact-synthesis-usage-1".to_string(),
+            candidate_id: Some("cand-compact-synthesis-usage-1".to_string()),
+            provider_name: Some("Aliyun".to_string()),
+            provider_id: "provider-1".to_string(),
+            endpoint_id: "endpoint-1".to_string(),
+            key_id: "key-1".to_string(),
+            method: "POST".to_string(),
+            url: "https://example.com/v1/chat/completions".to_string(),
+            headers: BTreeMap::new(),
+            content_type: Some("application/json".to_string()),
+            content_encoding: None,
+            body: RequestBody::from_json(json!({"model": "kimi-k2.5"})),
+            stream: false,
+            client_api_format: "openai:responses".to_string(),
+            provider_api_format: "openai:chat".to_string(),
+            model_name: Some("kimi-k2.5".to_string()),
+            proxy: None,
+            transport_profile: None,
+            timeouts: None,
+        };
+        let report_context = json!({
+            "client_api_format": "openai:responses",
+            "provider_api_format": "openai:chat",
+            "needs_conversion": true,
+            "codex_compact_synthesis_enabled": true,
+            "openai_responses_operation": "compact",
+            "provider_request_body": {
+                "model": "kimi-k2.5",
+                "messages": [{"role": "user", "content": "CONTEXT CHECKPOINT COMPACTION"}]
+            }
+        });
+
+        let pending = build_pending_usage_event_from_owned_seed(
+            super::build_lifecycle_usage_seed(&plan, Some(&report_context)),
+            1_700_000_030,
+        )
+        .expect("pending usage event should build");
+        let pending_record =
+            build_upsert_usage_record_from_event(&pending).expect("pending record should build");
+        assert_eq!(pending_record.request_type.as_deref(), Some("compact"));
+
+        let terminal_seed = build_terminal_usage_context_seed(&plan, Some(&report_context));
+        assert_eq!(terminal_seed.request_type, "compact");
+    }
+
+    #[test]
+    fn stripped_upstream_body_without_compact_operation_stays_chat() {
+        let plan = ExecutionPlan {
+            request_id: "req-stripped-chat-usage-1".to_string(),
+            candidate_id: Some("cand-stripped-chat-usage-1".to_string()),
+            provider_name: Some("Aliyun".to_string()),
+            provider_id: "provider-1".to_string(),
+            endpoint_id: "endpoint-1".to_string(),
+            key_id: "key-1".to_string(),
+            method: "POST".to_string(),
+            url: "https://example.com/v1/chat/completions".to_string(),
+            headers: BTreeMap::new(),
+            content_type: Some("application/json".to_string()),
+            content_encoding: None,
+            body: RequestBody::from_json(json!({"model": "kimi-k2.5"})),
+            stream: false,
+            client_api_format: "openai:responses".to_string(),
+            provider_api_format: "openai:chat".to_string(),
+            model_name: Some("kimi-k2.5".to_string()),
+            proxy: None,
+            transport_profile: None,
+            timeouts: None,
+        };
+        let seed = super::build_lifecycle_usage_seed(
+            &plan,
+            Some(&json!({
+                "client_api_format": "openai:responses",
+                "provider_api_format": "openai:chat",
+                "provider_request_body": {
+                    "model": "kimi-k2.5",
+                    "messages": [{"role": "user", "content": "hello"}]
+                }
+            })),
+        );
+        assert_eq!(seed.request_type, "chat");
     }
 
     #[test]

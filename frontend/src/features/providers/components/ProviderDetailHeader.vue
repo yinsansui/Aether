@@ -13,6 +13,16 @@
         </Badge>
       </div>
       <div class="flex items-center gap-1 shrink-0">
+        <span :title="compactSynthesisTitle">
+          <Button
+            variant="ghost"
+            size="icon"
+            :class="provider.codex_compact_synthesis_enabled ? 'text-primary' : ''"
+            @click="$emit('toggleCompactSynthesis')"
+          >
+            <ListCollapse class="w-4 h-4" />
+          </Button>
+        </span>
         <span :title="formatConversionTitle">
           <Button
             variant="ghost"
@@ -174,7 +184,7 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Edit, GitBranch, Globe, Layers, Loader2, Plus, Power, Shuffle, X } from 'lucide-vue-next'
+import { Edit, GitBranch, Globe, Layers, ListCollapse, Loader2, Plus, Power, Shuffle, X } from 'lucide-vue-next'
 import Button from '@/components/ui/button.vue'
 import Badge from '@/components/ui/badge.vue'
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui'
@@ -196,6 +206,7 @@ const props = defineProps<{
 }>()
 
 defineEmits<{
+  (e: 'toggleCompactSynthesis'): void
   (e: 'toggleFormatConversion'): void
   (e: 'toggleKeepPriorityOnConversion'): void
   (e: 'openFailoverRules'): void
@@ -216,6 +227,12 @@ const formatConversionTitle = computed(() => {
   if (props.systemFormatConversionEnabled) return legacyT('系统级格式转换已启用')
   if (props.provider.enable_format_conversion) return legacyT('已启用格式转换（点击关闭）')
   return legacyT('启用格式转换')
+})
+
+const compactSynthesisTitle = computed(() => {
+  return props.provider.codex_compact_synthesis_enabled
+    ? legacyT('已启用 Compact 协议合成（点击关闭）')
+    : legacyT('启用 Compact 协议合成')
 })
 
 const formatConversionAvailable = computed(() => (

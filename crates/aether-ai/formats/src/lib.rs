@@ -56,6 +56,15 @@ pub use formats::openai::responses::codex::{
 pub use formats::openai::responses::request::{
     validate_openai_responses_request_contract, OpenAiResponsesRequestContractViolation,
 };
+pub use formats::openai::responses::compact_synthesis::{
+    build_compact_synthesis_sse, compact_synthesis_enabled_from_report_context,
+    decode_compact_synthesis_encrypted_content, encode_compact_synthesis_encrypted_content,
+    extract_summary_text_from_responses_output, insert_compact_synthesis_report_context_fields,
+    is_compact_operation_from_report_context, maybe_rewrite_responses_sse_for_compact_synthesis,
+    prepare_compact_synthesis_provider_request, responses_body_is_remote_compaction_request,
+    responses_output_has_compaction_item, synthesize_compaction_client_response,
+    AETHER_COMPACT_SYNTHESIS_PREFIX,
+};
 pub use formats::openai::responses::{
     normalize_openai_responses_message_item_ids, openai_responses_message_item_id,
     openai_responses_request_operation, openai_responses_synthetic_reasoning_item_id,

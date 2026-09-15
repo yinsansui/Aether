@@ -472,6 +472,45 @@ pub(crate) async fn resolve_local_openai_responses_candidate_payload_parts_with_
         mapped_model.as_str(),
         source_model,
     );
+    let compact_synthesis_enabled = crate::provider_transport::codex_compact_synthesis_enabled(
+        transport.provider.config.as_ref(),
+    );
+    let is_compact_operation = aether_ai_formats::responses_body_is_remote_compaction_request(
+        spec_metadata.api_format,
+        body_json,
+    );
+    // Cross-format compact is only valid when this provider synthesizes Compaction
+    // items; otherwise keep the candidate Responses-only (skip here).
+    if is_compact_operation
+        && needs_bidirectional_conversion
+        && !crate::ai_serving::planner::compact_candidate_api_format_allowed_for_provider(
+            provider_api_format,
+            compact_synthesis_enabled,
+        )
+    {
+        mark_skipped_local_openai_responses_candidate_with_extra_data(
+            state,
+            input,
+            trace_id,
+            candidate,
+            candidate_index,
+            candidate_id,
+            "compact_synthesis_required_for_cross_format",
+            None,
+        )
+        .await;
+        return Ok(None);
+    }
+    // Expand synthetic history / strip compaction_trigger / tools on the client
+    // Responses body *before* cross-format conversion so lossy validation passes.
+    let mut provider_source_body = body_json.clone();
+    aether_ai_formats::prepare_compact_synthesis_provider_request(
+        &mut provider_source_body,
+        compact_synthesis_enabled,
+        is_compact_operation,
+    );
+    let body_json = &provider_source_body;
+
     let Some(mut base_provider_request_body) = (if is_grok
         && is_grok_text_provider_api_format(provider_api_format)
     {

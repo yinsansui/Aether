@@ -164,6 +164,10 @@ pub(crate) async fn build_admin_create_provider_record(
     if provider_type != "codex" {
         remove_codex_fingerprint_config(&mut config_map);
     }
+
+    if let Some(enabled) = payload.codex_compact_synthesis_enabled {
+        crate::provider_transport::set_codex_compact_synthesis_enabled(&mut config_map, enabled);
+    }
     if let Some(value) = normalize_json_object(payload.failover_rules, "failover_rules")? {
         config_map.insert("failover_rules".to_string(), value);
     }

@@ -53,6 +53,7 @@ function normalizeProviderSummary(
     chat_pii_redaction: normalizeChatPiiRedactionProvider(provider.chat_pii_redaction),
     pool_advanced: normalizePoolAdvanced(provider.pool_advanced),
     codex_fingerprint_convergence_enabled: provider.codex_fingerprint_convergence_enabled ?? false,
+    codex_compact_synthesis_enabled: provider.codex_compact_synthesis_enabled ?? false,
     kiro_simulated_cache_enabled: provider.kiro_simulated_cache_enabled ?? false,
     max_transfer_count: provider.max_transfer_count ?? 0,
     max_transfer_timeout_seconds: provider.max_transfer_timeout_seconds ?? 0,
@@ -135,6 +136,7 @@ export async function updateProvider(
     is_active: boolean
     claude_code_advanced: ClaudeCodeAdvancedConfig | null
     codex_fingerprint_convergence_enabled: boolean
+    codex_compact_synthesis_enabled?: boolean
     pool_advanced: PoolAdvancedConfig | null
     failover_rules: FailoverRulesConfig | null
     config: ProviderConfig | null

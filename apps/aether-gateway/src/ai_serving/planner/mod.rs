@@ -30,6 +30,7 @@ mod standard;
 mod state;
 
 pub(crate) use self::candidate_materialization::LocalExecutionAttemptSource;
+pub(crate) use self::candidate_source::compact_candidate_api_format_allowed_for_provider;
 pub(crate) use self::candidate_resolution::{
     candidate_auth_channel_skip_reason, read_candidate_transport_snapshot,
     EligibleLocalExecutionCandidate, LocalExecutionCandidateKind, SkippedLocalExecutionCandidate,

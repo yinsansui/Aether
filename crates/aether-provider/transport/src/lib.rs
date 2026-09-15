@@ -5,6 +5,7 @@ pub mod auth;
 mod auth_config;
 mod cache;
 pub mod claude_code;
+mod codex_compact_synthesis;
 mod codex_fingerprint;
 pub mod conversion;
 mod diagnostics;
@@ -57,6 +58,11 @@ pub use anthropic_compat::{
 pub use auth::{build_passthrough_headers, ensure_upstream_auth_header};
 pub use auth_config::apply_local_auth_config_header_overrides;
 pub use cache::{provider_transport_snapshot_looks_refreshed, ProviderTransportSnapshotCacheKey};
+pub use codex_compact_synthesis::{
+    codex_compact_synthesis_enabled, remove_codex_compact_synthesis_config,
+    set_codex_compact_synthesis_enabled, CODEX_COMPACT_SYNTHESIS_CONFIG_NAMESPACE,
+    CODEX_COMPACT_SYNTHESIS_ENABLED_CONFIG_KEY,
+};
 pub use codex_fingerprint::{
     apply_codex_fingerprint_convergence, apply_codex_fingerprint_convergence_with_context,
     codex_fingerprint_convergence_enabled, CodexFingerprintConvergenceContext,

@@ -123,13 +123,25 @@ fn restrict_candidate_api_formats_for_operation(
         return candidate_api_formats;
     }
 
+    // Compact stays Responses-first. Cross-format Chat/Claude/Gemini entries are
+    // kept in the matrix so providers with `codex_compact_synthesis_enabled` can
+    // be discovered; providers with the switch off are skipped when building the
+    // provider request (`compact_synthesis_required_for_cross_format`).
+    // Do not treat this list widen as a bypass of lossy conversion — synthesis
+    // must strip `compaction_trigger` before cross-format conversion.
     candidate_api_formats
-        .into_iter()
-        .filter(|candidate_api_format| {
-            crate::ai_serving::normalize_api_format_alias(candidate_api_format)
-                == "openai:responses"
-        })
-        .collect()
+}
+
+/// Whether a compact candidate API format may be attempted for a provider.
+///
+/// Responses candidates are always allowed. Non-Responses candidates require
+/// that provider's compact synthesis switch.
+pub(crate) fn compact_candidate_api_format_allowed_for_provider(
+    candidate_api_format: &str,
+    synthesis_enabled: bool,
+) -> bool {
+    crate::ai_serving::normalize_api_format_alias(candidate_api_format) == "openai:responses"
+        || synthesis_enabled
 }
 
 #[async_trait]
@@ -1490,10 +1502,19 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     #[test]
-    fn compaction_operation_excludes_non_responses_provider_formats() {
+    fn compaction_operation_keeps_cross_format_formats_for_synthesis_discovery() {
+        // Format matrix stays open so synthesis-enabled Chat/Claude/Gemini
+        // providers remain discoverable. Providers with synthesis off are
+        // skipped later via compact_candidate_api_format_allowed_for_provider /
+        // compact_synthesis_required_for_cross_format.
         assert_eq!(
             request_candidate_api_formats_for_operation("openai:responses", true, Some("compact"),),
-            vec!["openai:responses"]
+            vec![
+                "openai:responses",
+                "openai:chat",
+                "claude:messages",
+                "gemini:generate_content"
+            ]
         );
         assert_eq!(
             request_candidate_api_formats_for_operation("openai:responses", true, None),
@@ -1512,6 +1533,30 @@ mod tests {
             ),
             vec!["openai:responses:compact"]
         );
+    }
+
+    #[test]
+    fn compact_non_responses_candidates_require_synthesis_switch() {
+        assert!(compact_candidate_api_format_allowed_for_provider(
+            "openai:responses",
+            false
+        ));
+        assert!(!compact_candidate_api_format_allowed_for_provider(
+            "openai:chat",
+            false
+        ));
+        assert!(compact_candidate_api_format_allowed_for_provider(
+            "openai:chat",
+            true
+        ));
+        assert!(compact_candidate_api_format_allowed_for_provider(
+            "claude:messages",
+            true
+        ));
+        assert!(!compact_candidate_api_format_allowed_for_provider(
+            "gemini:generate_content",
+            false
+        ));
     }
 
     #[derive(Default)]

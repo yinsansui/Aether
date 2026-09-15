@@ -146,6 +146,19 @@ pub(crate) async fn maybe_build_local_openai_responses_decision_payload_for_cand
         &mut extra_fields,
         resolved.transport.provider.provider_type.as_str(),
     );
+
+    let compact_synthesis_enabled = crate::provider_transport::codex_compact_synthesis_enabled(
+        resolved.transport.provider.config.as_ref(),
+    );
+    let is_compact_operation = aether_ai_formats::responses_body_is_remote_compaction_request(
+        spec_metadata.api_format,
+        body_json,
+    );
+    aether_ai_formats::insert_compact_synthesis_report_context_fields(
+        &mut extra_fields,
+        compact_synthesis_enabled,
+        is_compact_operation,
+    );
     let effective_headers = input.effective_headers(&parts.headers);
     let report_context = append_local_failover_policy_to_value(
         append_execution_contract_fields_to_value(

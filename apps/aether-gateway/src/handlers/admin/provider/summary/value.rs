@@ -215,6 +215,9 @@ pub(crate) fn build_admin_provider_summary_value(
             &provider.provider_type,
             provider.config.as_ref(),
         ),
+        "codex_compact_synthesis_enabled": crate::provider_transport::codex_compact_synthesis_enabled(
+            provider.config.as_ref(),
+        ),
         "responses_websocket_enabled": responses_websocket_adapter(&provider.provider_type, provider.config.as_ref()).is_some(),
         "ops_quota_alert_enabled": ops_quota_alert_enabled,
         "created_at": endpoint_timestamp_or_now(provider.created_at_unix_ms, now_unix_secs),

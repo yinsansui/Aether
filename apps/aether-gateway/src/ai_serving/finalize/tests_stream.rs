@@ -1162,3 +1162,40 @@ fn openai_chat_to_gemini_cli_stream_rewriter_converts_via_standard_matrix() {
     assert!(output_text.contains("\"totalTokenCount\":5"));
     assert!(rewriter.finish().expect("finish should succeed").is_empty());
 }
+
+#[test]
+fn compact_synthesis_buffers_until_finish_and_emits_single_compaction() {
+    let report_context = json!({
+        "provider_api_format": "openai:responses",
+        "client_api_format": "openai:responses",
+        "needs_conversion": false,
+        "codex_compact_synthesis_enabled": true,
+        "openai_responses_operation": "compact",
+        "mapped_model": "test-model",
+    });
+    let mut rewriter =
+        maybe_build_local_stream_rewriter(Some(&report_context)).expect("rewriter should exist");
+    let mid = rewriter
+        .push_chunk(
+            b"event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_c\",\"object\":\"response\",\"model\":\"test-model\",\"status\":\"in_progress\",\"output\":[]}}\n\n",
+        )
+        .expect("created should buffer");
+    assert!(mid.is_empty(), "compact synthesis must not emit before finish");
+    let mid = rewriter
+        .push_chunk(
+            b"event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"summary text\"}\n\n",
+        )
+        .expect("delta should buffer");
+    assert!(mid.is_empty());
+    let finished = rewriter
+        .push_chunk(
+            b"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_c\",\"status\":\"completed\",\"output\":[]}}\n\n",
+        )
+        .expect("completed should buffer");
+    assert!(finished.is_empty());
+    let output = utf8(rewriter.finish().expect("finish should synthesize"));
+    assert!(output.contains("\"type\":\"compaction\""));
+    assert_eq!(output.matches("\"type\":\"compaction\"").count(), 1);
+    assert!(output.contains("aether_compact_v1:"));
+    assert!(output.contains("response.completed"));
+}
