@@ -59,10 +59,10 @@ const editingModel = {
   updated_at: '2026-01-01T00:00:00Z',
 } as Model
 
-function mountDialog(model: Model | null = editingModel) {
+function mountDialog(model: Model | null = editingModel, initiallyOpen = false) {
   const root = document.createElement('div')
   document.body.appendChild(root)
-  const open = ref(false)
+  const open = ref(initiallyOpen)
   const app = createApp(defineComponent({
     setup() {
       return () => h(ProviderModelFormDialog, {
@@ -74,7 +74,7 @@ function mountDialog(model: Model | null = editingModel) {
   }))
   app.mount(root)
   mountedApps.push({ app, root })
-  open.value = true
+  if (!initiallyOpen) open.value = true
 }
 
 function findButton(text: string): HTMLButtonElement {
@@ -110,6 +110,48 @@ afterEach(() => {
 })
 
 describe('ProviderModelFormDialog processing-tier pricing', () => {
+  it('prefills and submits pricing when mounted already open', async () => {
+    const providerPricing = {
+      tiers: [{ up_to: null, input_price_per_1m: 7, output_price_per_1m: 42 }],
+    }
+    globalModelMocks.getGlobalModel.mockResolvedValue({
+      id: 'global-model-1',
+      name: 'gpt-test',
+      display_name: 'GPT Test',
+      is_active: true,
+      default_tiered_pricing: editingModel.effective_tiered_pricing,
+      created_at: '2026-01-01T00:00:00Z',
+      total_models: 1,
+      total_providers: 1,
+      price_range: {},
+    })
+
+    mountDialog({
+      ...editingModel,
+      tiered_pricing: providerPricing,
+      effective_tiered_pricing: providerPricing,
+    } as Model, true)
+    await settle()
+    findButton('Token').click()
+    await nextTick()
+
+    const input = document.body.querySelector<HTMLInputElement>(
+      'input[aria-label="Standard 阶梯 1 输入价格（美元/百万 Token）"]',
+    )
+    if (!input) throw new Error('Missing Standard input-price editor')
+    expect(input.value).toBe('7')
+
+    input.value = '8'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    findButton('保存').click()
+    await settle()
+
+    expect(modelMocks.updateModel.mock.calls[0][2].tiered_pricing).toEqual({
+      tiers: [{ up_to: null, input_price_per_1m: 8, output_price_per_1m: 42 }],
+    })
+  })
+
   it('uses the same compact Fast grouping for inherited global-model pricing', async () => {
     mountDialog()
     await settle()

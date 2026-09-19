@@ -579,7 +579,7 @@ watch(() => props.open, async (newOpen) => {
       await loadAvailableGlobalModels()
     }
   }
-})
+}, { immediate: true })
 
 // 添加模式：选择全局模型时显示其阶梯计费配置（仅供预览）
 // 注意：为保持继承关系，添加时只有用户修改了配置才提交 tiered_pricing
