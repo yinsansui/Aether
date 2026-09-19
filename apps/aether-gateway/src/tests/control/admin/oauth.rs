@@ -9200,6 +9200,190 @@ async fn gateway_upserts_custom_oidc_with_allowed_domains_impl() {
 }
 
 #[test]
+fn gateway_admin_oauth_test_resolves_allowed_domains_from_payload_extra_config() {
+    run_admin_oauth_test(
+        "gateway_admin_oauth_test_resolves_allowed_domains_from_payload_extra_config",
+        gateway_admin_oauth_test_resolves_allowed_domains_from_payload_extra_config_impl,
+    );
+}
+
+async fn gateway_admin_oauth_test_resolves_allowed_domains_from_payload_extra_config_impl() {
+    let repository = Arc::new(InMemoryOAuthProviderRepository::default());
+    let gateway = build_router_with_state(
+        AppState::new()
+            .expect("gateway should build")
+            .with_data_state_for_tests(GatewayDataState::with_oauth_provider_repository_for_tests(
+                repository,
+            )),
+    );
+    let (gateway_url, gateway_handle) = start_server(gateway).await;
+
+    // 管理页「测试」按钮必须把表单里的 extra_config 一起提交；自定义 provider 的
+    // allowed_domains 只能从这里解析，漏传会被误判为端点不可达。
+    let post_test = |extra_config: Option<Value>| {
+        let gateway_url = gateway_url.clone();
+        let mut body = json!({
+            "client_id": "aether",
+            "authorization_url_override": "https://idp.invalid/oauth/authorize",
+            "token_url_override": "https://idp.invalid/oauth/token",
+            "redirect_uri": "http://localhost:8084/api/oauth/custom_oidc_oa/callback"
+        });
+        if let Some(extra_config) = extra_config {
+            body["extra_config"] = extra_config;
+        }
+        async move {
+            reqwest::Client::new()
+                .post(format!(
+                    "{gateway_url}/api/admin/oauth/providers/custom_oidc_oa/test"
+                ))
+                .header(crate::constants::GATEWAY_HEADER, "rust-phase3b")
+                .header(TRUSTED_ADMIN_USER_ID_HEADER, "admin-user-123")
+                .header(TRUSTED_ADMIN_USER_ROLE_HEADER, "admin")
+                .header(TRUSTED_ADMIN_SESSION_ID_HEADER, "session-123")
+                .json(&body)
+                .send()
+                .await
+                .expect("request should succeed")
+        }
+    };
+
+    let without_extra_config = post_test(None).await;
+    assert_eq!(without_extra_config.status(), StatusCode::OK);
+    let payload: Value = without_extra_config
+        .json()
+        .await
+        .expect("json body should parse");
+    assert_eq!(
+        payload["details"],
+        "OAuth 端点必须使用 https 且位于 provider 域名白名单中"
+    );
+
+    let with_extra_config = post_test(Some(json!({"allowed_domains": ["idp.invalid"]}))).await;
+    assert_eq!(with_extra_config.status(), StatusCode::OK);
+    let payload: Value = with_extra_config
+        .json()
+        .await
+        .expect("json body should parse");
+    // 白名单解析成功后才会进入真实可达性探测；idp.invalid 必然解析失败，
+    // 因此这里能稳定区分「白名单为空」与「白名单已生效」两种结果。
+    assert_eq!(
+        payload["details"],
+        "OAuth 端点不可达或返回不可用状态；请检查端点 URL 和网络配置"
+    );
+    assert_eq!(payload["authorization_url_reachable"], false);
+    assert_eq!(payload["token_url_reachable"], false);
+
+    gateway_handle.abort();
+}
+
+struct OAuthPrivateHttpEnvGuard {
+    previous: Option<String>,
+}
+
+impl Drop for OAuthPrivateHttpEnvGuard {
+    fn drop(&mut self) {
+        match self.previous.take() {
+            Some(value) => std::env::set_var("AETHER_OAUTH_ALLOW_PRIVATE_HTTP", value),
+            None => std::env::remove_var("AETHER_OAUTH_ALLOW_PRIVATE_HTTP"),
+        }
+    }
+}
+
+fn set_oauth_private_http_env(value: Option<&str>) -> OAuthPrivateHttpEnvGuard {
+    let previous = std::env::var("AETHER_OAUTH_ALLOW_PRIVATE_HTTP").ok();
+    match value {
+        Some(value) => std::env::set_var("AETHER_OAUTH_ALLOW_PRIVATE_HTTP", value),
+        None => std::env::remove_var("AETHER_OAUTH_ALLOW_PRIVATE_HTTP"),
+    }
+    OAuthPrivateHttpEnvGuard { previous }
+}
+
+#[test]
+fn gateway_upserts_custom_oidc_with_private_http_callback_only_when_opted_in() {
+    run_admin_oauth_test(
+        "gateway_upserts_custom_oidc_with_private_http_callback_only_when_opted_in",
+        gateway_upserts_custom_oidc_with_private_http_callback_only_when_opted_in_impl,
+    );
+}
+
+async fn gateway_upserts_custom_oidc_with_private_http_callback_only_when_opted_in_impl() {
+    let guard = set_oauth_private_http_env(None);
+
+    let repository = Arc::new(InMemoryOAuthProviderRepository::default());
+    let gateway = build_router_with_state(
+        AppState::new()
+            .expect("gateway should build")
+            .with_data_state_for_tests(GatewayDataState::with_oauth_provider_repository_for_tests(
+                repository.clone(),
+            )),
+    );
+    let (gateway_url, gateway_handle) = start_server(gateway).await;
+
+    let private_http_payload = |redirect_uri: &str| {
+        json!({
+            "display_name": "Custom OIDC OA",
+            "client_id": "aether",
+            "authorization_url_override": "https://oa.abcyun.cn/api/management/login/oidc/authorize",
+            "token_url_override": "https://oa.abcyun.cn/api/management/login/oidc/token",
+            "userinfo_url_override": "https://oa.abcyun.cn/api/management/login/oidc/userinfo",
+            "scopes": ["openid", "profile", "email"],
+            "redirect_uri": redirect_uri,
+            "frontend_callback_url": "http://172.19.10.176:8084/auth/callback",
+            "extra_config": {"allowed_domains": ["oa.abcyun.cn"]},
+            "is_enabled": true
+        })
+    };
+    let put_provider = |body: Value| {
+        let gateway_url = gateway_url.clone();
+        async move {
+            reqwest::Client::new()
+                .put(format!(
+                    "{gateway_url}/api/admin/oauth/providers/custom_oidc_oa"
+                ))
+                .header(crate::constants::GATEWAY_HEADER, "rust-phase3b")
+                .header(TRUSTED_ADMIN_USER_ID_HEADER, "admin-user-123")
+                .header(TRUSTED_ADMIN_USER_ROLE_HEADER, "admin")
+                .header(TRUSTED_ADMIN_SESSION_ID_HEADER, "session-123")
+                .json(&body)
+                .send()
+                .await
+                .expect("request should succeed")
+        }
+    };
+
+    let rejected = put_provider(private_http_payload(
+        "http://172.19.10.176:8084/api/oauth/custom_oidc_oa/callback",
+    ))
+    .await;
+    assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+    let body: Value = rejected.json().await.expect("json body should parse");
+    assert_eq!(
+        body["error"]["message"],
+        "frontend_callback_url must use https, except for localhost or loopback IPs"
+    );
+
+    let enabled_guard = set_oauth_private_http_env(Some("1"));
+    let accepted = put_provider(private_http_payload(
+        "http://172.19.10.176:8084/api/oauth/custom_oidc_oa/callback",
+    ))
+    .await;
+    assert_eq!(accepted.status(), StatusCode::OK);
+    let stored = repository
+        .get_oauth_provider_config("custom_oidc_oa")
+        .await
+        .expect("lookup should succeed")
+        .expect("provider should exist");
+    assert_eq!(
+        stored.frontend_callback_url,
+        "http://172.19.10.176:8084/auth/callback"
+    );
+
+    gateway_handle.abort();
+    drop(enabled_guard);
+    drop(guard);
+}
+
+#[test]
 fn gateway_upserts_multiple_custom_oidc_configs() {
     run_admin_oauth_test(
         "gateway_upserts_multiple_custom_oidc_configs",

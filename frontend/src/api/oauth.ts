@@ -81,6 +81,7 @@ export interface OAuthProviderTestRequest {
   authorization_url_override?: string | null
   token_url_override?: string | null
   redirect_uri: string
+  extra_config?: Record<string, unknown> | null
 }
 
 export const oauthApi = {

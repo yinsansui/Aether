@@ -391,7 +391,7 @@ import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { log } from '@/utils/logger'
 import { getErrorMessage, getErrorStatus, isApiError } from '@/types/api-error'
-import { summarizeOAuthConfigTest } from '@/utils/oauthConfigTest'
+import { buildOAuthConfigTestPayload, parseJsonOrNull, summarizeOAuthConfigTest } from '@/utils/oauthConfigTest'
 
 const { success, warning, error: showError } = useToast()
 const { confirmWarning } = useConfirm()
@@ -626,13 +626,6 @@ function parseScopes(input: string): string[] | null {
   return parts.length ? parts : null
 }
 
-function parseJsonOrNull(input: string): Record<string, unknown> | null {
-  const raw = input.trim()
-  if (!raw) return null
-  return JSON.parse(raw)
-}
-
-
 function syncFormFromSelected() {
   lastTestResult.value = null
   const cfg = configs.value[selectedType.value]
@@ -772,13 +765,7 @@ async function handleTest() {
   testing.value = true
   try {
     const providerType = selectedType.value === '__new__' ? ensureNewProviderType() : selectedType.value
-    const testPayload = {
-      client_id: form.value.client_id.trim(),
-      client_secret: form.value.client_secret.trim() || undefined,
-      authorization_url_override: form.value.authorization_url_override.trim() || null,
-      token_url_override: form.value.token_url_override.trim() || null,
-      redirect_uri: form.value.redirect_uri.trim(),
-    }
+    const testPayload = buildOAuthConfigTestPayload(form.value)
     const result = await oauthApi.admin.testProviderConfig(providerType, testPayload)
     lastTestResult.value = result
     const summary = summarizeOAuthConfigTest(result)

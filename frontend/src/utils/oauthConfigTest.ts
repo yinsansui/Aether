@@ -1,4 +1,36 @@
-import type { OAuthProviderTestResponse } from '@/api/oauth'
+import type { OAuthProviderTestRequest, OAuthProviderTestResponse } from '@/api/oauth'
+
+export interface OAuthConfigTestFormInput {
+  client_id: string
+  client_secret: string
+  authorization_url_override: string
+  token_url_override: string
+  redirect_uri: string
+  extra_config_json: string
+}
+
+export function parseJsonOrNull(input: string): Record<string, unknown> | null {
+  const raw = input.trim()
+  if (!raw) return null
+  return JSON.parse(raw)
+}
+
+/**
+ * 「测试」按钮提交的 payload。extra_config 必须一起带上：未保存的自定义
+ * provider 只能从这里解析 allowed_domains，漏传会把可达的端点误判为不可达。
+ */
+export function buildOAuthConfigTestPayload(
+  form: OAuthConfigTestFormInput,
+): OAuthProviderTestRequest {
+  return {
+    client_id: form.client_id.trim(),
+    client_secret: form.client_secret.trim() || undefined,
+    authorization_url_override: form.authorization_url_override.trim() || null,
+    token_url_override: form.token_url_override.trim() || null,
+    redirect_uri: form.redirect_uri.trim(),
+    extra_config: parseJsonOrNull(form.extra_config_json),
+  }
+}
 
 export type OAuthConfigTestSeverity = 'success' | 'warning' | 'error'
 

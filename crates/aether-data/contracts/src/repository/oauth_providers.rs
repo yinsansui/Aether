@@ -2,18 +2,64 @@ use async_trait::async_trait;
 use std::net::IpAddr;
 use url::{Host, Url};
 
+/// 私网部署的显式开关。置为真时，`redirect_uri` 与 `frontend_callback_url`
+/// 额外允许私网或回环 IP 字面量走 http；默认关闭，默认策略仍是
+/// 「https，或回环地址上的 http」。
+const OAUTH_ALLOW_PRIVATE_HTTP_ENV: &str = "AETHER_OAUTH_ALLOW_PRIVATE_HTTP";
+
+fn oauth_private_http_allowed() -> bool {
+    std::env::var(OAUTH_ALLOW_PRIVATE_HTTP_ENV)
+        .ok()
+        .is_some_and(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+}
+
+/// 判定 IP 字面量是否落在可显式放开明文 http 的私网范围：IPv4 为 RFC1918
+/// 私网与回环，IPv6 为回环与 ULA。刻意不含 `0.0.0.0`/`::` 与链路本地地址
+/// （含云元数据 `169.254.169.254`），避免这个开关顺带放行它们。
+fn is_private_or_loopback_ip(address: IpAddr) -> bool {
+    match address {
+        IpAddr::V4(address) => address.is_private() || address.is_loopback(),
+        IpAddr::V6(address) => {
+            if let Some(mapped) = address.to_ipv4_mapped() {
+                return is_private_or_loopback_ip(IpAddr::V4(mapped));
+            }
+            address.is_loopback() || address.is_unique_local()
+        }
+    }
+}
+
+fn oauth_transport_allowed(host: Host<&str>, scheme: &str, allow_private_http: bool) -> bool {
+    if scheme == "https" {
+        return true;
+    }
+    if scheme != "http" {
+        return false;
+    }
+    match host {
+        Host::Domain(domain) => domain.eq_ignore_ascii_case("localhost"),
+        Host::Ipv4(address) => {
+            address.is_loopback()
+                || (allow_private_http && is_private_or_loopback_ip(IpAddr::V4(address)))
+        }
+        Host::Ipv6(address) => {
+            address.is_loopback()
+                || (allow_private_http && is_private_or_loopback_ip(IpAddr::V6(address)))
+        }
+    }
+}
+
 pub fn validate_oauth_redirect_uri(value: &str) -> Result<(), String> {
     let parsed =
         Url::parse(value).map_err(|_| "redirect_uri must be an absolute URL".to_string())?;
     let Some(host) = parsed.host() else {
         return Err("redirect_uri must be an absolute URL".to_string());
     };
-    let is_loopback = match host {
-        Host::Domain(domain) => domain.eq_ignore_ascii_case("localhost"),
-        Host::Ipv4(address) => address.is_loopback(),
-        Host::Ipv6(address) => address.is_loopback(),
-    };
-    if parsed.scheme() != "https" && !(parsed.scheme() == "http" && is_loopback) {
+    if !oauth_transport_allowed(host, parsed.scheme(), oauth_private_http_allowed()) {
         return Err(
             "redirect_uri must use https, except for localhost or loopback IPs".to_string(),
         );
@@ -33,12 +79,7 @@ pub fn validate_oauth_frontend_callback_url(value: &str) -> Result<(), String> {
     let Some(host) = parsed.host() else {
         return Err("frontend_callback_url must be an absolute URL".to_string());
     };
-    let is_loopback = match host {
-        Host::Domain(domain) => domain.eq_ignore_ascii_case("localhost"),
-        Host::Ipv4(address) => address.is_loopback(),
-        Host::Ipv6(address) => address.is_loopback(),
-    };
-    if parsed.scheme() != "https" && !(parsed.scheme() == "http" && is_loopback) {
+    if !oauth_transport_allowed(host, parsed.scheme(), oauth_private_http_allowed()) {
         return Err(
             "frontend_callback_url must use https, except for localhost or loopback IPs"
                 .to_string(),
@@ -526,6 +567,7 @@ mod tests {
     use super::{
         validate_oauth_frontend_callback_url, validate_oauth_provider_endpoint_config,
         validate_oauth_redirect_uri, EncryptedSecretUpdate, StoredOAuthProviderConfig,
+        OAUTH_ALLOW_PRIVATE_HTTP_ENV,
     };
 
     #[test]
@@ -698,6 +740,78 @@ mod tests {
                 "accepted {value}"
             );
         }
+    }
+
+    struct PrivateHttpEnvGuard {
+        previous: Option<String>,
+    }
+
+    impl Drop for PrivateHttpEnvGuard {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => std::env::set_var(OAUTH_ALLOW_PRIVATE_HTTP_ENV, value),
+                None => std::env::remove_var(OAUTH_ALLOW_PRIVATE_HTTP_ENV),
+            }
+        }
+    }
+
+    fn private_http_env_guard(value: Option<&str>) -> PrivateHttpEnvGuard {
+        let previous = std::env::var(OAUTH_ALLOW_PRIVATE_HTTP_ENV).ok();
+        match value {
+            Some(value) => std::env::set_var(OAUTH_ALLOW_PRIVATE_HTTP_ENV, value),
+            None => std::env::remove_var(OAUTH_ALLOW_PRIVATE_HTTP_ENV),
+        }
+        PrivateHttpEnvGuard { previous }
+    }
+
+    #[test]
+    fn oauth_callback_transport_allows_private_http_only_when_opted_in() {
+        // 默认策略：只有 https 与回环地址上的 http 通过，私网与公网字面量都拒绝。
+        // 显式清空开关，避免外部环境已导出该变量时让这一段失去意义。
+        let disabled_guard = private_http_env_guard(None);
+        for rejected in [
+            "http://frontend.example/auth/callback",
+            "http://172.19.10.176:8084/auth/callback",
+            "http://10.0.0.8:8084/auth/callback",
+            "http://8.8.8.8:8084/auth/callback",
+        ] {
+            assert!(
+                validate_oauth_frontend_callback_url(rejected).is_err(),
+                "accepted {rejected} without opt-in"
+            );
+        }
+
+        // AETHER_OAUTH_ALLOW_PRIVATE_HTTP=1 放行 RFC1918/ULA 与回环字面量，
+        // 但不放行公网地址、域名，也不放行 0.0.0.0、:: 与链路本地地址。
+        let enabled_guard = private_http_env_guard(Some("1"));
+        assert!(validate_oauth_redirect_uri(
+            "http://172.19.10.176:8084/api/oauth/custom_oidc_oa/callback"
+        )
+        .is_ok());
+        assert!(validate_oauth_redirect_uri("http://10.0.0.8:8084/callback").is_ok());
+        assert!(validate_oauth_redirect_uri("http://[fd00::1]:8084/callback").is_ok());
+        assert!(
+            validate_oauth_frontend_callback_url("http://172.19.10.176:8084/auth/callback").is_ok()
+        );
+        for rejected in [
+            "http://8.8.8.8:8084/callback",
+            "http://oa.abcyun.cn/callback",
+            "http://[::ffff:8.8.8.8]:8084/callback",
+            "http://0.0.0.0:8084/callback",
+            "http://[::]:8084/callback",
+            "http://169.254.169.254:8084/callback",
+            "http://user:password@172.19.10.176:8084/callback",
+        ] {
+            assert!(
+                validate_oauth_redirect_uri(rejected).is_err(),
+                "accepted {rejected} with the opt-in"
+            );
+        }
+        assert!(validate_oauth_frontend_callback_url("http://8.8.8.8:8084/auth/callback").is_err());
+        assert!(validate_oauth_frontend_callback_url("http://oa.abcyun.cn/auth/callback").is_err());
+        assert!(validate_oauth_frontend_callback_url("http://0.0.0.0:8084/auth/callback").is_err());
+        drop(enabled_guard);
+        drop(disabled_guard);
     }
 }
 
