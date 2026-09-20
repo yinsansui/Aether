@@ -132,28 +132,41 @@
           </template>
 
           <div class="space-y-6">
-            <!-- 新建时的 Display Name -->
-            <div
-              v-if="selectedType === '__new__'"
-              class="grid grid-cols-1 md:grid-cols-2 gap-4"
-            >
+            <!-- 显示名称对已保存的配置也可编辑；配置标识是主键，仅新建时可填 -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <Label class="block text-sm font-medium">显示名称</Label>
                 <Input
+                  v-if="selectedType === '__new__'"
                   v-model="form.new_display_name"
                   class="mt-1"
                   placeholder="例如：My OIDC Provider"
+                  autocomplete="off"
+                />
+                <Input
+                  v-else
+                  v-model="form.display_name"
+                  class="mt-1"
+                  placeholder="例如：企业微信"
                   autocomplete="off"
                 />
               </div>
               <div>
                 <Label class="block text-sm font-medium">配置标识</Label>
                 <Input
+                  v-if="selectedType === '__new__'"
                   v-model="form.new_provider_type"
                   class="mt-1"
                   placeholder="custom_oidc_work"
                   autocomplete="off"
                   @blur="normalizeNewProviderType"
+                />
+                <Input
+                  v-else
+                  :model-value="selectedType"
+                  class="mt-1 cursor-not-allowed bg-muted/70 text-muted-foreground"
+                  readonly
+                  autocomplete="off"
                 />
               </div>
             </div>
@@ -392,6 +405,7 @@ import { useConfirm } from '@/composables/useConfirm'
 import { log } from '@/utils/logger'
 import { getErrorMessage, getErrorStatus, isApiError } from '@/types/api-error'
 import { buildOAuthConfigTestPayload, parseJsonOrNull, summarizeOAuthConfigTest } from '@/utils/oauthConfigTest'
+import { resolveOAuthProviderDisplayName } from '@/utils/oauthProviderForm'
 
 const { success, warning, error: showError } = useToast()
 const { confirmWarning } = useConfirm()
@@ -404,6 +418,7 @@ const BUILTIN_OAUTH_PROVIDER_TYPES = new Set(['linuxdo'])
 const CUSTOM_OIDC_TEMPLATE_TYPE = 'custom_oidc'
 
 interface OAuthConfigForm {
+  display_name: string
   client_id: string
   client_secret: string
   authorization_url_override: string
@@ -426,6 +441,7 @@ const lastTestResult = ref<OAuthProviderTestResponse | null>(null)
 const newConfigPending = ref(false)
 
 const form = ref<OAuthConfigForm>({
+  display_name: '',
   client_id: '',
   client_secret: '',
   authorization_url_override: '',
@@ -593,6 +609,7 @@ function handleClickAdd() {
   selectedType.value = '__new__'
   newConfigPending.value = true
   form.value = {
+    display_name: '',
     client_id: '',
     client_secret: '',
     authorization_url_override: '',
@@ -631,6 +648,7 @@ function syncFormFromSelected() {
   const cfg = configs.value[selectedType.value]
 
   form.value = {
+    display_name: cfg?.display_name || '',
     client_id: cfg?.client_id || '',
     client_secret: '',
     authorization_url_override: cfg?.authorization_url_override || '',
@@ -731,7 +749,14 @@ async function handleSave() {
     const providerType = isNew ? ensureNewProviderType() : selectedType.value
     const existingConfig = configs.value[providerType]
     const payload = {
-      display_name: isNew ? (form.value.new_display_name.trim() || 'Custom OIDC') : (configs.value[providerType]?.display_name || supportedTypes.value.find((t) => t.provider_type === providerType)?.display_name || providerType),
+      display_name: resolveOAuthProviderDisplayName({
+        isNew,
+        providerType,
+        formDisplayName: form.value.display_name,
+        newDisplayName: form.value.new_display_name,
+        existingDisplayName: existingConfig?.display_name,
+        templateDisplayName: supportedTypes.value.find((t) => t.provider_type === providerType)?.display_name,
+      }),
       client_id: form.value.client_id.trim(),
       client_secret: form.value.client_secret.trim() || undefined,
       authorization_url_override: form.value.authorization_url_override.trim() || null,
