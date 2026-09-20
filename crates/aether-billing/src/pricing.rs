@@ -1,6 +1,10 @@
 use aether_data_contracts::repository::{
     billing::StoredBillingModelContext,
-    global_models::{explicit_pricing_catalog_state, ExplicitPricingCatalogState},
+    global_models::{
+        explicit_pricing_catalog_state, parse_time_pricing, parse_time_pricing_catalog_state,
+        resolve_time_pricing_window, ExplicitPricingCatalogState, TimePricingCatalogState,
+        TimePricingConfig,
+    },
     usage::normalize_provider_service_tier,
 };
 use serde::{Deserialize, Serialize};
@@ -48,9 +52,37 @@ pub struct BillingPricingResolution {
     pub processing_tier_price_multiplier: Option<f64>,
     pub price_per_request: Option<f64>,
     pub price_per_request_source: Option<BillingPricingSource>,
+    /// The clock the resolution priced against, echoed for audit. `None` means the request start
+    /// instant was unknown and time pricing fell back to the standard multiplier.
+    #[serde(default)]
+    pub request_started_at_unix_ms: Option<i64>,
+    /// Peak/off-peak multiplier selected from the request's own clock. `None` means the catalog
+    /// does not configure time pricing at all, which is different from a configured catalog whose
+    /// request time is unknown.
+    #[serde(default)]
+    pub time_pricing: Option<BillingTimePricingResolution>,
+}
+
+/// Which `time_pricing` window the final upstream request landed in.
+///
+/// The window id is kept next to the multiplier so a settled row can be audited against the
+/// catalog version that produced it without replaying the clock.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BillingTimePricingResolution {
+    pub timezone: String,
+    pub window_id: Option<String>,
+    pub price_multiplier: f64,
+    pub source: BillingPricingSource,
 }
 
 impl BillingPricingResolution {
+    /// Multiplier applied on top of the resolved base price. Unconfigured catalogs bill at `1.0`.
+    pub fn time_pricing_multiplier(&self) -> f64 {
+        self.time_pricing
+            .as_ref()
+            .map_or(1.0, |time_pricing| time_pricing.price_multiplier)
+    }
+
     pub fn requires_actual_processing_tier(&self) -> bool {
         self.billing_processing_tier.is_none()
     }
@@ -103,6 +135,7 @@ impl BillingModelPricingSnapshot {
         &self,
         requested_processing_tier: Option<&str>,
         actual_processing_tier: Option<&str>,
+        request_started_at_unix_ms: Option<i64>,
     ) -> BillingPricingResolution {
         let requested_processing_tier = normalize_processing_tier(requested_processing_tier);
         let actual_processing_tier = normalize_processing_tier(actual_processing_tier);
@@ -133,6 +166,11 @@ impl BillingModelPricingSnapshot {
             processing_tier_price_multiplier,
             price_per_request,
             price_per_request_source,
+            request_started_at_unix_ms,
+            time_pricing: self
+                .resolve_time_pricing_checked(request_started_at_unix_ms)
+                .ok()
+                .flatten(),
         }
     }
 
@@ -140,6 +178,7 @@ impl BillingModelPricingSnapshot {
         &self,
         requested_processing_tier: Option<&str>,
         actual_processing_tier: Option<&str>,
+        request_started_at_unix_ms: Option<i64>,
     ) -> Result<BillingPricingResolution, BillingPricingConfigurationError> {
         self.validate_processing_tier_containers()?;
         let requested_processing_tier = normalize_processing_tier(requested_processing_tier);
@@ -173,12 +212,15 @@ impl BillingModelPricingSnapshot {
             processing_tier_price_multiplier,
             price_per_request,
             price_per_request_source,
+            request_started_at_unix_ms,
+            time_pricing: self.resolve_time_pricing_checked(request_started_at_unix_ms)?,
         })
     }
 
     pub fn resolve_authorization_pricing_candidates(
         &self,
         requested_processing_tier: Option<&str>,
+        request_started_at_unix_ms: Option<i64>,
     ) -> Result<Option<Vec<BillingPricingResolution>>, BillingPricingConfigurationError> {
         self.validate_processing_tier_containers()?;
         let requested_processing_tier = normalize_processing_tier(requested_processing_tier);
@@ -189,6 +231,7 @@ impl BillingModelPricingSnapshot {
         let requested_resolution = self.authorization_pricing_for_tier(
             requested_processing_tier.clone(),
             Some(requested_billing_tier.clone()),
+            request_started_at_unix_ms,
         )?;
         if !processing_tier_is_standard(&requested_billing_tier)
             && requested_resolution.tiered_pricing.is_none()
@@ -204,7 +247,7 @@ impl BillingModelPricingSnapshot {
         &self,
         requested_processing_tier: Option<&str>,
     ) -> Result<(), BillingPricingConfigurationError> {
-        self.resolve_authorization_pricing_candidates(requested_processing_tier)
+        self.resolve_authorization_pricing_candidates(requested_processing_tier, None)
             .map(|_| ())
     }
 
@@ -212,6 +255,7 @@ impl BillingModelPricingSnapshot {
         &self,
         requested_processing_tier: Option<String>,
         billing_processing_tier: Option<String>,
+        request_started_at_unix_ms: Option<i64>,
     ) -> Result<BillingPricingResolution, BillingPricingConfigurationError> {
         let (tiered_pricing, tiered_pricing_source, processing_tier_price_multiplier) =
             match billing_processing_tier.as_deref() {
@@ -235,7 +279,57 @@ impl BillingModelPricingSnapshot {
             processing_tier_price_multiplier,
             price_per_request,
             price_per_request_source,
+            request_started_at_unix_ms,
+            time_pricing: self.resolve_time_pricing_checked(request_started_at_unix_ms)?,
         })
+    }
+
+    /// Resolves the `time_pricing` block that governs this snapshot's clock behaviour.
+    ///
+    /// A provider catalog that configures `time_pricing` replaces the global windows wholesale.
+    /// Merging the two arrays would make it impossible to say which rule produced a given bill,
+    /// and a partial merge would silently price hours nobody configured.
+    fn resolve_time_pricing_checked(
+        &self,
+        request_started_at_unix_ms: Option<i64>,
+    ) -> Result<Option<BillingTimePricingResolution>, BillingPricingConfigurationError> {
+        let Some((config, source)) = self.time_pricing_config_checked()? else {
+            return Ok(None);
+        };
+        // The final upstream request start is the only authority for the billing hour. An absent
+        // or unrepresentable timestamp bills at the standard price rather than guessing peak.
+        let window = request_started_at_unix_ms
+            .and_then(|at_unix_ms| resolve_time_pricing_window(&config, at_unix_ms));
+        Ok(Some(BillingTimePricingResolution {
+            timezone: config.timezone.clone(),
+            window_id: window.map(|window| window.id.clone()),
+            price_multiplier: window.map_or(1.0, |window| window.price_multiplier),
+            source,
+        }))
+    }
+
+    fn time_pricing_config_checked(
+        &self,
+    ) -> Result<Option<(TimePricingConfig, BillingPricingSource)>, BillingPricingConfigurationError>
+    {
+        match parse_time_pricing_catalog_state(
+            "models.tiered_pricing",
+            self.model_tiered_pricing.as_ref(),
+        )
+        .map_err(BillingPricingConfigurationError::new)?
+        {
+            TimePricingCatalogState::Configured(config) => {
+                return Ok(Some((config, BillingPricingSource::ProviderOverride)));
+            }
+            TimePricingCatalogState::Disabled => return Ok(None),
+            TimePricingCatalogState::Inherit => {}
+        }
+        parse_time_pricing(
+            "global_models.default_tiered_pricing",
+            self.default_tiered_pricing.as_ref(),
+        )
+        .map(|config| config.map(|config| (config, BillingPricingSource::GlobalDefault)))
+        .map_err(BillingPricingConfigurationError::new)
     }
 
     fn resolve_tiered_pricing(
@@ -797,7 +891,7 @@ mod tests {
             json!({"tiers":[{"up_to":null,"input_price_per_1m":3.0,"output_price_per_1m":15.0}]});
         let pricing = snapshot(Some(json!({})), Some(default_pricing.clone()));
 
-        let resolution = pricing.resolve_pricing(None, None);
+        let resolution = pricing.resolve_pricing(None, None, None);
         assert_eq!(resolution.tiered_pricing, Some(default_pricing.clone()));
         assert_eq!(
             resolution.tiered_pricing_source,
@@ -806,7 +900,7 @@ mod tests {
 
         let pricing = snapshot(Some(json!({"tiers": []})), Some(default_pricing.clone()));
 
-        let resolution = pricing.resolve_pricing(None, None);
+        let resolution = pricing.resolve_pricing(None, None, None);
         assert_eq!(resolution.tiered_pricing, Some(default_pricing));
         assert_eq!(
             resolution.tiered_pricing_source,
@@ -822,7 +916,7 @@ mod tests {
             json!({"tiers":[{"up_to":null,"input_price_per_1m":3.0,"output_price_per_1m":15.0}]});
         let pricing = snapshot(Some(provider_pricing.clone()), Some(default_pricing));
 
-        let resolution = pricing.resolve_pricing(None, None);
+        let resolution = pricing.resolve_pricing(None, None, None);
         assert_eq!(resolution.tiered_pricing, Some(provider_pricing));
         assert_eq!(
             resolution.tiered_pricing_source,
@@ -840,7 +934,7 @@ mod tests {
             Some(provider_pricing.clone()),
             Some(default_pricing.clone()),
         )
-        .resolve_pricing(Some("fast"), None);
+        .resolve_pricing(Some("fast"), None, None);
         assert_eq!(provider.billing_processing_tier.as_deref(), Some("fast"));
         assert_eq!(provider.tiered_pricing, Some(provider_pricing));
         assert_eq!(
@@ -849,8 +943,11 @@ mod tests {
         );
         assert_eq!(provider.processing_tier_price_multiplier, None);
 
-        let global =
-            snapshot(None, Some(default_pricing.clone())).resolve_pricing(Some("priority"), None);
+        let global = snapshot(None, Some(default_pricing.clone())).resolve_pricing(
+            Some("priority"),
+            None,
+            None,
+        );
         assert_eq!(global.billing_processing_tier.as_deref(), Some("priority"));
         assert_eq!(global.tiered_pricing, Some(default_pricing));
         assert_eq!(
@@ -865,7 +962,7 @@ mod tests {
         let mut pricing = snapshot(None, None);
         pricing.default_price_per_request = Some(0.02);
 
-        let resolution = pricing.resolve_pricing(Some("fast"), None);
+        let resolution = pricing.resolve_pricing(Some("fast"), None, None);
         assert_eq!(resolution.billing_processing_tier.as_deref(), Some("fast"));
         assert_eq!(resolution.tiered_pricing, None);
         assert_eq!(resolution.price_per_request, Some(0.02));
@@ -874,7 +971,7 @@ mod tests {
             Some(BillingPricingSource::GlobalDefault)
         );
         assert!(pricing
-            .resolve_authorization_pricing_candidates(Some("fast"))
+            .resolve_authorization_pricing_candidates(Some("fast"), None)
             .expect("fixed request pricing should be valid")
             .is_some());
     }
@@ -891,7 +988,7 @@ mod tests {
             })),
         );
 
-        let resolution = pricing.resolve_pricing(Some("Priority"), None);
+        let resolution = pricing.resolve_pricing(Some("Priority"), None, None);
 
         assert!(!resolution.requires_actual_processing_tier());
         assert_eq!(
@@ -928,7 +1025,7 @@ mod tests {
             })),
         );
 
-        let flex = pricing.resolve_pricing(Some("priority"), Some("flex"));
+        let flex = pricing.resolve_pricing(Some("priority"), Some("flex"), None);
         assert_eq!(flex.actual_processing_tier.as_deref(), Some("flex"));
         assert_eq!(flex.billing_processing_tier.as_deref(), Some("priority"));
         assert_eq!(
@@ -943,7 +1040,7 @@ mod tests {
             Some(9.0)
         );
 
-        let standard = pricing.resolve_pricing(Some("priority"), Some("Default"));
+        let standard = pricing.resolve_pricing(Some("priority"), Some("Default"), None);
         assert_eq!(standard.actual_processing_tier.as_deref(), Some("default"));
         assert_eq!(
             standard.billing_processing_tier.as_deref(),
@@ -963,7 +1060,7 @@ mod tests {
         );
         pricing.model_price_per_request = Some(0.02);
 
-        let resolution = pricing.resolve_pricing(None, None);
+        let resolution = pricing.resolve_pricing(None, None, None);
 
         assert_eq!(
             resolution.tiered_pricing_source,
@@ -989,7 +1086,7 @@ mod tests {
         );
 
         let candidates = pricing
-            .resolve_authorization_pricing_candidates(Some("Priority"))
+            .resolve_authorization_pricing_candidates(Some("Priority"), None)
             .expect("authorization catalogs should resolve")
             .expect("authorization catalogs should be configured");
         let resolution = candidates
@@ -1055,7 +1152,7 @@ mod tests {
         );
         pricing.model_price_per_request = Some(0.02);
 
-        let resolution = pricing.resolve_pricing(Some("priority"), Some("priority"));
+        let resolution = pricing.resolve_pricing(Some("priority"), Some("priority"), None);
         let catalog = resolution
             .tiered_pricing
             .as_ref()
@@ -1202,7 +1299,7 @@ mod tests {
                 3.0,
             ),
         ] {
-            let resolution = pricing.resolve_pricing(Some(tier), None);
+            let resolution = pricing.resolve_pricing(Some(tier), None, None);
             let catalog = resolution
                 .tiered_pricing
                 .as_ref()
@@ -1222,7 +1319,7 @@ mod tests {
             );
         }
 
-        let flex = pricing.resolve_pricing(Some("flex"), None);
+        let flex = pricing.resolve_pricing(Some("flex"), None, None);
         let flex_catalog = flex
             .tiered_pricing
             .as_ref()
@@ -1273,7 +1370,7 @@ mod tests {
                 }
             })),
         );
-        let resolved = provider_explicit.resolve_pricing(Some("priority"), Some("priority"));
+        let resolved = provider_explicit.resolve_pricing(Some("priority"), Some("priority"), None);
         assert_eq!(
             resolved
                 .tiered_pricing
@@ -1299,7 +1396,8 @@ mod tests {
                 }
             })),
         );
-        let resolved = provider_multiplier.resolve_pricing(Some("priority"), Some("priority"));
+        let resolved =
+            provider_multiplier.resolve_pricing(Some("priority"), Some("priority"), None);
         assert_eq!(
             resolved
                 .tiered_pricing
@@ -1325,7 +1423,7 @@ mod tests {
                 }
             })),
         );
-        let resolved = global_explicit.resolve_pricing(Some("priority"), Some("priority"));
+        let resolved = global_explicit.resolve_pricing(Some("priority"), Some("priority"), None);
         assert_eq!(
             resolved
                 .tiered_pricing
@@ -1346,7 +1444,7 @@ mod tests {
                 "processing_tiers": {"priority": {"price_multiplier": 4.0}}
             })),
         );
-        let resolved = global_multiplier.resolve_pricing(Some("priority"), Some("priority"));
+        let resolved = global_multiplier.resolve_pricing(Some("priority"), Some("priority"), None);
         assert_eq!(
             resolved
                 .tiered_pricing
@@ -1370,8 +1468,11 @@ mod tests {
                 "tiers": [{"up_to": null, "input_price_per_1m": 3.0}]
             })),
         );
-        let resolved = provider_multiplier_with_global_standard
-            .resolve_pricing(Some("priority"), Some("priority"));
+        let resolved = provider_multiplier_with_global_standard.resolve_pricing(
+            Some("priority"),
+            Some("priority"),
+            None,
+        );
         assert_eq!(
             resolved
                 .tiered_pricing
@@ -1400,7 +1501,7 @@ mod tests {
             })),
         );
 
-        let resolved = pricing.resolve_pricing(Some("fast"), Some("priority"));
+        let resolved = pricing.resolve_pricing(Some("fast"), Some("priority"), None);
 
         assert_eq!(resolved.actual_processing_tier.as_deref(), Some("priority"));
         assert_eq!(resolved.billing_processing_tier.as_deref(), Some("fast"));
@@ -1433,7 +1534,7 @@ mod tests {
             })),
         );
 
-        let resolution = pricing.resolve_pricing(Some("priority"), Some("priority"));
+        let resolution = pricing.resolve_pricing(Some("priority"), Some("priority"), None);
         assert_eq!(
             resolution.billing_processing_tier.as_deref(),
             Some("priority")
@@ -1454,7 +1555,7 @@ mod tests {
         );
 
         let candidates = pricing
-            .resolve_authorization_pricing_candidates(Some("priority"))
+            .resolve_authorization_pricing_candidates(Some("priority"), None)
             .expect("multiplier-only processing catalog should authorize")
             .expect("multiplier-only processing catalog should be configured");
         let priority = candidates
@@ -1475,6 +1576,208 @@ mod tests {
         );
         assert_eq!(priority.processing_tier_price_multiplier, Some(2.5));
     }
+
+    // 2026-09-21 10:00 +08:00, a Monday inside a 09:00-12:00 window.
+    const SHANGHAI_MONDAY_PEAK_UNIX_MS: i64 = 1_789_956_000_000;
+    // 2026-09-21 12:00 +08:00, the exclusive end of that window.
+    const SHANGHAI_MONDAY_PEAK_END_UNIX_MS: i64 = 1_789_963_200_000;
+
+    fn china_peak_windows() -> serde_json::Value {
+        json!({
+            "timezone": "Asia/Shanghai",
+            "windows": [{
+                "id": "workday-morning-peak",
+                "weekdays": ["monday", "tuesday", "wednesday", "thursday", "friday"],
+                "start": "09:00",
+                "end": "12:00",
+                "price_multiplier": 2
+            }]
+        })
+    }
+
+    #[test]
+    fn absent_time_pricing_reports_no_time_dimension_at_all() {
+        let pricing = snapshot(
+            None,
+            Some(json!({"tiers":[{"up_to":null,"input_price_per_1m":3.0}]})),
+        );
+
+        let resolution = pricing.resolve_pricing(None, None, Some(SHANGHAI_MONDAY_PEAK_UNIX_MS));
+
+        assert_eq!(resolution.time_pricing, None);
+        assert_eq!(resolution.time_pricing_multiplier(), 1.0);
+    }
+
+    #[test]
+    fn a_configured_window_reports_its_multiplier_and_boundaries() {
+        let pricing = snapshot(
+            None,
+            Some(json!({
+                "tiers":[{"up_to":null,"input_price_per_1m":3.0}],
+                "time_pricing": china_peak_windows()
+            })),
+        );
+
+        let peak = pricing.resolve_pricing(None, None, Some(SHANGHAI_MONDAY_PEAK_UNIX_MS));
+        assert_eq!(peak.time_pricing_multiplier(), 2.0);
+        assert_eq!(
+            peak.time_pricing
+                .as_ref()
+                .and_then(|value| value.window_id.as_deref()),
+            Some("workday-morning-peak")
+        );
+        assert_eq!(
+            peak.time_pricing.as_ref().map(|value| value.source),
+            Some(BillingPricingSource::GlobalDefault)
+        );
+        assert_eq!(
+            peak.time_pricing
+                .as_ref()
+                .map(|value| value.timezone.as_str()),
+            Some("Asia/Shanghai")
+        );
+
+        let boundary = pricing.resolve_pricing(None, None, Some(SHANGHAI_MONDAY_PEAK_END_UNIX_MS));
+        assert_eq!(boundary.time_pricing_multiplier(), 1.0);
+        assert_eq!(
+            boundary
+                .time_pricing
+                .as_ref()
+                .and_then(|value| value.window_id.as_deref()),
+            None
+        );
+    }
+
+    #[test]
+    fn an_unknown_clock_bills_at_the_standard_multiplier() {
+        let pricing = snapshot(
+            None,
+            Some(json!({
+                "tiers":[{"up_to":null,"input_price_per_1m":3.0}],
+                "time_pricing": china_peak_windows()
+            })),
+        );
+
+        let resolution = pricing.resolve_pricing(None, None, None);
+
+        assert_eq!(resolution.time_pricing_multiplier(), 1.0);
+        assert_eq!(
+            resolution
+                .time_pricing
+                .as_ref()
+                .and_then(|value| value.window_id.as_deref()),
+            None
+        );
+        assert_eq!(
+            resolution
+                .time_pricing
+                .as_ref()
+                .map(|value| value.timezone.as_str()),
+            Some("Asia/Shanghai")
+        );
+    }
+
+    #[test]
+    fn provider_time_pricing_replaces_the_global_windows_wholesale() {
+        let pricing = snapshot(
+            Some(json!({
+                "tiers":[{"up_to":null,"input_price_per_1m":9.0}],
+                "time_pricing": {
+                    "timezone": "UTC",
+                    "windows": [{
+                        "id": "utc-night-peak",
+                        "weekdays": ["monday"],
+                        "start": "00:00",
+                        "end": "02:00",
+                        "price_multiplier": 3
+                    }]
+                }
+            })),
+            Some(json!({
+                "tiers":[{"up_to":null,"input_price_per_1m":3.0}],
+                "time_pricing": china_peak_windows()
+            })),
+        );
+
+        // 2026-09-21 01:30 UTC is inside the provider window and 09:30 Shanghai inside the global
+        // one; the provider window must win on both count.
+        let utc_peak = pricing.resolve_pricing(None, None, Some(1_789_954_200_000));
+        assert_eq!(
+            utc_peak
+                .time_pricing
+                .as_ref()
+                .and_then(|value| value.window_id.as_deref()),
+            Some("utc-night-peak")
+        );
+        assert_eq!(utc_peak.time_pricing_multiplier(), 3.0);
+        assert_eq!(
+            utc_peak.time_pricing.as_ref().map(|value| value.source),
+            Some(BillingPricingSource::ProviderOverride)
+        );
+
+        // The Shanghai peak hour is outside the provider window, so it bills at the standard price
+        // instead of inheriting the global peak.
+        let shanghai_peak = pricing.resolve_pricing(None, None, Some(SHANGHAI_MONDAY_PEAK_UNIX_MS));
+        assert_eq!(shanghai_peak.time_pricing_multiplier(), 1.0);
+        assert_eq!(
+            shanghai_peak
+                .time_pricing
+                .as_ref()
+                .map(|value| value.timezone.as_str()),
+            Some("UTC")
+        );
+    }
+
+    #[test]
+    fn provider_can_explicitly_disable_global_time_pricing() {
+        let pricing = snapshot(
+            Some(json!({
+                "tiers":[{"up_to":null,"input_price_per_1m":9.0}],
+                "time_pricing": null
+            })),
+            Some(json!({
+                "tiers":[{"up_to":null,"input_price_per_1m":3.0}],
+                "time_pricing": china_peak_windows()
+            })),
+        );
+
+        let resolution = pricing.resolve_pricing(None, None, Some(SHANGHAI_MONDAY_PEAK_UNIX_MS));
+
+        assert_eq!(resolution.time_pricing, None);
+        assert_eq!(resolution.time_pricing_multiplier(), 1.0);
+    }
+
+    #[test]
+    fn authorization_candidates_carry_the_request_hour_multiplier() {
+        let pricing = snapshot(
+            None,
+            Some(json!({
+                "tiers":[{"up_to":null,"input_price_per_1m":3.0,"output_price_per_1m":15.0}],
+                "processing_tiers": {"priority": {"price_multiplier": 2.0}},
+                "time_pricing": china_peak_windows()
+            })),
+        );
+
+        let candidates = pricing
+            .resolve_authorization_pricing_candidates(
+                Some("priority"),
+                Some(SHANGHAI_MONDAY_PEAK_UNIX_MS),
+            )
+            .expect("authorization resolution should succeed")
+            .expect("authorization candidates should exist");
+
+        assert!(!candidates.is_empty());
+        for candidate in &candidates {
+            assert_eq!(candidate.time_pricing_multiplier(), 2.0);
+            assert_eq!(
+                candidate
+                    .time_pricing
+                    .as_ref()
+                    .and_then(|value| value.window_id.as_deref()),
+                Some("workday-morning-peak")
+            );
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1485,6 +1788,13 @@ pub struct BillingUsageInput {
     pub requested_processing_tier: Option<String>,
     #[serde(default)]
     pub actual_processing_tier: Option<String>,
+    /// When the final upstream request was dispatched, in Unix milliseconds.
+    ///
+    /// This is deliberately the upstream dispatch instant rather than the response or settlement
+    /// instant: a stream that crosses a peak boundary must still be billed by when it started.
+    /// `None` bills at the standard price.
+    #[serde(default)]
+    pub request_started_at_unix_ms: Option<i64>,
     pub request_count: i64,
     pub input_tokens: i64,
     pub output_tokens: i64,
@@ -1505,6 +1815,8 @@ pub struct BillingAuthorizationEstimateInput {
     pub api_format: Option<String>,
     pub requested_processing_tier: Option<String>,
     #[serde(default)]
+    pub request_started_at_unix_ms: Option<i64>,
+    #[serde(default)]
     pub cache_ttl_minutes: Option<i64>,
     pub input_tokens: i64,
     pub max_output_tokens: Option<i64>,
@@ -1516,6 +1828,7 @@ impl BillingAuthorizationEstimateInput {
             task_type: task_type.into(),
             api_format: None,
             requested_processing_tier: None,
+            request_started_at_unix_ms: None,
             cache_ttl_minutes: None,
             input_tokens: input_tokens.max(0),
             max_output_tokens: None,
@@ -1530,6 +1843,7 @@ impl BillingUsageInput {
             api_format: None,
             requested_processing_tier: None,
             actual_processing_tier: None,
+            request_started_at_unix_ms: None,
             request_count: 1,
             input_tokens: 0,
             output_tokens: 0,

@@ -16,6 +16,13 @@ export interface UsageRecord {
   api_key_name?: string
   provider_key_name?: string | null
   rate_multiplier?: number
+  time_pricing?: {
+    timezone: string
+    window_id?: string | null
+    price_multiplier: number
+    source?: 'provider_override' | 'global_default' | 'mixed' | null
+    request_started_at_unix_ms?: number | null
+  } | null
   model: string
   target_model?: string | null  // 映射后的目标模型名（若无映射则为空）
   model_version?: string | null  // Provider 返回的实际模型版本（列表轻量字段）

@@ -19,6 +19,11 @@ use super::{
 
 const UPSTREAM_IS_STREAM_KEY: &str = "upstream_is_stream";
 const PLAN_USAGE_RESERVATION_TOKEN_KEY: &str = "plan_usage_reservation_token";
+
+/// Set by the gateway execution runtime when it observes an upstream response, so it is an
+/// observation field rather than planner issued context.
+pub const PROVIDER_REQUEST_STARTED_AT_UNIX_MS_METADATA_KEY: &str =
+    "provider_request_started_at_unix_ms";
 const BODY_SIZE_BASIS: &str = "serialized gateway request bodies after normalization";
 pub const CANCELLED_REQUEST_FEE_METADATA_KEY: &str = "cancelled_request_fee";
 
@@ -106,6 +111,9 @@ pub fn sanitize_usage_request_metadata_object(source: &Map<String, Value>) -> Op
         "client_response_body_base64_bytes",
         "end_to_end_time_ms",
         "end_to_end_first_byte_time_ms",
+        // Billing needs the upstream dispatch instant to pick a time based price window. The
+        // gateway records it while observing the response, so it has to survive projection.
+        PROVIDER_REQUEST_STARTED_AT_UNIX_MS_METADATA_KEY,
     ] {
         insert_u64(source, &mut target, key);
     }
@@ -140,6 +148,7 @@ pub fn sanitize_usage_request_metadata_object(source: &Map<String, Value>) -> Op
 
     for key in [
         "rate_multiplier",
+        "time_pricing_multiplier",
         "input_price_per_1m",
         "output_price_per_1m",
         "cache_creation_price_per_1m",
@@ -906,7 +915,26 @@ fn project_pricing_snapshot(value: &Value) -> Option<Value> {
         insert_nonnegative_number(source, &mut target, key);
     }
     insert_bool(source, &mut target, "is_free_tier");
+    if let Some(value) = source.get("time_pricing").and_then(project_time_pricing) {
+        target.insert("time_pricing".to_string(), value);
+    }
     (!target.is_empty()).then_some(Value::Object(target))
+}
+
+/// The window a settled request landed in, kept beside the multiplier so a row can be audited
+/// against the catalog without replaying the clock.
+fn project_time_pricing(value: &Value) -> Option<Value> {
+    let source = value.as_object()?;
+    let mut target = Map::new();
+    insert_timezone(source, &mut target, "timezone");
+    insert_token(source, &mut target, "window_id", 128);
+    insert_nonnegative_number(source, &mut target, "price_multiplier");
+    insert_nullable_known_string(source, &mut target, "source", sanitize_pricing_source);
+    insert_u64(source, &mut target, "request_started_at_unix_ms");
+    ["timezone", "price_multiplier", "source"]
+        .iter()
+        .all(|key| target.contains_key(*key))
+        .then_some(Value::Object(target))
 }
 
 fn sanitize_pricing_source(value: &str) -> Option<String> {
@@ -1085,6 +1113,28 @@ fn insert_model_token(source: &Map<String, Value>, target: &mut Map<String, Valu
                 && value
                     .bytes()
                     .all(|byte| byte.is_ascii_alphanumeric() || b"._:/@+-".contains(&byte))
+        })
+    else {
+        return;
+    };
+    target.insert(key.to_string(), Value::String(value.to_string()));
+}
+
+/// Projects an IANA timezone identifier.
+///
+/// `Area/Location` names need `/`, which the generic token projector rejects. Dropping the value
+/// would leave a settled row unable to explain which clock the price was read against.
+fn insert_timezone(source: &Map<String, Value>, target: &mut Map<String, Value>, key: &str) {
+    let Some(value) = source
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| {
+            !value.is_empty()
+                && value.len() <= 64
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"./_+-".contains(&byte))
         })
     else {
         return;
@@ -1307,7 +1357,7 @@ mod tests {
                 "tier_info": {"catalog": "secret"}
             },
             "settlement_snapshot": {
-                "schema_version": "3.0",
+                "schema_version": "4.0",
                 "pricing_snapshot": {
                     "provider_api_key_id": "key-secret",
                     "tiered_pricing": {"tenant": "secret"},
@@ -1315,6 +1365,14 @@ mod tests {
                     "pricing_source": "provider_override",
                     "price_per_request": 0.02,
                     "rate_multiplier": 1.25,
+                    "time_pricing": {
+                        "timezone": "Asia/Shanghai",
+                        "window_id": "workday-morning-peak",
+                        "price_multiplier": 2.0,
+                        "source": "provider_override",
+                        "request_started_at_unix_ms": 1789956000000_u64,
+                        "tenant_secret": "secret"
+                    },
                     "is_free_tier": false
                 },
                 "billing_plan_snapshot": {
@@ -1345,7 +1403,7 @@ mod tests {
         );
         assert_eq!(metadata["billing_snapshot_schema_version"], "2.0");
         assert_eq!(metadata["billing_snapshot_status"], "complete");
-        assert_eq!(metadata["settlement_snapshot_schema_version"], "3.0");
+        assert_eq!(metadata["settlement_snapshot_schema_version"], "4.0");
         assert_eq!(
             metadata.pointer("/billing_snapshot/resolved_variables/input_price_per_1m"),
             Some(&json!(3.0))
@@ -1368,6 +1426,126 @@ mod tests {
         assert!(metadata
             .pointer("/billing_dimensions/secret_dimension")
             .is_none());
+        assert_eq!(
+            metadata.pointer("/settlement_snapshot/pricing_snapshot/time_pricing"),
+            Some(&json!({
+                "timezone": "Asia/Shanghai",
+                "window_id": "workday-morning-peak",
+                "price_multiplier": 2.0,
+                "source": "provider_override",
+                "request_started_at_unix_ms": 1789956000000_u64
+            }))
+        );
+    }
+
+    #[test]
+    fn persistence_projection_keeps_the_time_pricing_window_beside_its_multiplier() {
+        let metadata = sanitize_usage_request_metadata(Some(json!({
+            "time_pricing_multiplier": 2.0,
+            "settlement_snapshot": {
+                "schema_version": "4.0",
+                "pricing_snapshot": {
+                    "rate_multiplier": 1.0,
+                    "time_pricing": {
+                        "timezone": "Asia/Shanghai",
+                        "window_id": "workday-morning-peak",
+                        "price_multiplier": 2.0,
+                        "source": "global_default",
+                        "request_started_at_unix_ms": 1789956000000_u64
+                    }
+                },
+                "cost_breakdown": {"input_cost": 0.0006},
+                "total_cost": 0.0006,
+                "status": "complete"
+            }
+        })))
+        .expect("time pricing facts should remain");
+
+        assert_eq!(metadata["time_pricing_multiplier"], json!(2.0));
+        assert_eq!(
+            metadata.pointer("/settlement_snapshot/pricing_snapshot/time_pricing"),
+            Some(&json!({
+                "timezone": "Asia/Shanghai",
+                "window_id": "workday-morning-peak",
+                "price_multiplier": 2.0,
+                "source": "global_default",
+                "request_started_at_unix_ms": 1789956000000_u64
+            }))
+        );
+    }
+
+    #[test]
+    fn persistence_projection_drops_unusable_time_pricing_facts() {
+        let metadata = sanitize_usage_request_metadata(Some(json!({
+            "settlement_snapshot": {
+                "schema_version": "4.0",
+                "pricing_snapshot": {
+                    "time_pricing": {
+                        "timezone": "Asia/Shanghai; DROP TABLE usage",
+                        "window_id": "workday morning peak",
+                        "price_multiplier": -2.0,
+                        "source": "attacker_controlled",
+                        "request_started_at_unix_ms": "yesterday"
+                    }
+                }
+            }
+        })))
+        .expect("the settlement envelope itself is still bounded");
+
+        // Every unusable field drops individually; the block is only absent because nothing
+        // survived. A half-written window would still describe a charge nobody can reproduce.
+        assert!(metadata
+            .pointer("/settlement_snapshot/pricing_snapshot/time_pricing")
+            .is_none());
+    }
+
+    #[test]
+    fn persistence_projection_drops_partial_time_pricing_facts() {
+        let metadata = sanitize_usage_request_metadata(Some(json!({
+            "settlement_snapshot": {
+                "schema_version": "4.0",
+                "pricing_snapshot": {
+                    "time_pricing": {
+                        "timezone": "Asia/Shanghai",
+                        "price_multiplier": 2.0
+                    }
+                }
+            }
+        })))
+        .expect("the settlement envelope itself remains valid");
+
+        assert!(metadata
+            .pointer("/settlement_snapshot/pricing_snapshot/time_pricing")
+            .is_none());
+    }
+
+    #[test]
+    fn persistence_projection_keeps_an_off_peak_time_pricing_record() {
+        let metadata = sanitize_usage_request_metadata(Some(json!({
+            "settlement_snapshot": {
+                "schema_version": "4.0",
+                "pricing_snapshot": {
+                    "time_pricing": {
+                        "timezone": "UTC",
+                        "window_id": null,
+                        "price_multiplier": 1.0,
+                        "source": "provider_override",
+                        "request_started_at_unix_ms": 1789869600000_u64
+                    }
+                }
+            }
+        })))
+        .expect("off peak settlements still carry an auditable window");
+
+        assert_eq!(
+            metadata.pointer("/settlement_snapshot/pricing_snapshot/time_pricing"),
+            Some(&json!({
+                "timezone": "UTC",
+                "price_multiplier": 1.0,
+                "source": "provider_override",
+                "request_started_at_unix_ms": 1789869600000_u64
+            }))
+        );
     }
 
     #[test]

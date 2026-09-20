@@ -636,7 +636,6 @@
               </TabsList>
 
               <TieredPricingEditor
-                v-show="billingMode === 'token' || billingMode === 'image'"
                 ref="tieredPricingEditorRef"
                 v-model="tieredPricing"
                 class="mt-3"

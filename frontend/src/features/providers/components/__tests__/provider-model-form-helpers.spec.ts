@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import type { TieredPricingConfig } from '@/api/endpoints'
 
 import {
   buildProviderModelCreatePayload,
@@ -150,6 +151,16 @@ describe('provider model pricing override helpers', () => {
   const inheritedPricing = {
     tiers: [{ up_to: null, input_price_per_1m: 5, output_price_per_1m: 30 }],
     future_global_option: 'inherit-only',
+    time_pricing: {
+      timezone: 'Asia/Shanghai',
+      windows: [{
+        id: 'workday-peak',
+        weekdays: ['monday'],
+        start: '09:00',
+        end: '12:00',
+        price_multiplier: 2,
+      }],
+    },
     processing_tiers: {
       priority: { price_multiplier: 2.5 },
       fast: { price_multiplier: 2 },
@@ -243,6 +254,61 @@ describe('provider model pricing override helpers', () => {
     )).toEqual({
       processing_tiers: {
         priority: { price_multiplier: 4 },
+      },
+    })
+  })
+
+  it('projects a time-pricing edit without freezing inherited Standard pricing', () => {
+    const finalPricing = structuredClone(inheritedPricing)
+    finalPricing.time_pricing.windows[0].price_multiplier = 3
+
+    expect(buildProviderTieredPricingOverride(
+      finalPricing,
+      inheritedPricing,
+      null,
+    )).toEqual({
+      time_pricing: {
+        ...inheritedPricing.time_pricing,
+        windows: [{
+          ...inheritedPricing.time_pricing.windows[0],
+          price_multiplier: 3,
+        }],
+      },
+    })
+  })
+
+  it('writes null when a Provider explicitly disables inherited time pricing', () => {
+    const finalPricing: TieredPricingConfig = structuredClone(inheritedPricing)
+    delete finalPricing.time_pricing
+
+    const override = buildProviderTieredPricingOverride(
+      finalPricing,
+      inheritedPricing,
+      null,
+    )
+
+    expect(override).toEqual({ time_pricing: null })
+    expect(mergeProviderTieredPricingForEditing(inheritedPricing, override)).toEqual({
+      ...inheritedPricing,
+      time_pricing: null,
+    })
+  })
+
+  it('keeps an existing explicit time-pricing disable on an unrelated edit', () => {
+    const savedOverride = { time_pricing: null }
+    const editorPricing = mergeProviderTieredPricingForEditing(inheritedPricing, savedOverride)!
+    const finalPricing = structuredClone(editorPricing)
+    delete finalPricing.time_pricing
+    finalPricing.processing_tiers!.priority.price_multiplier = 3
+
+    expect(buildProviderTieredPricingOverride(
+      finalPricing,
+      editorPricing,
+      savedOverride,
+    )).toEqual({
+      time_pricing: null,
+      processing_tiers: {
+        priority: { price_multiplier: 3 },
       },
     })
   })

@@ -69,7 +69,7 @@ import { Badge } from '@/components/ui'
 import { isCyberPolicyError } from '../utils/cyberError'
 import { formatServiceTierFact } from '../utils/service-tier'
 
-type ModelBadgeKey = 'compact' | 'reasoning' | 'fast' | 'cyber' | 'reasoning_tokens'
+type ModelBadgeKey = 'compact' | 'reasoning' | 'fast' | 'time_pricing' | 'cyber' | 'reasoning_tokens'
 
 interface ModelBadgePresentation {
   key: ModelBadgeKey
@@ -88,6 +88,13 @@ interface UsageModelDisplayRecord {
   requested_reasoning_effort?: string | null
   reasoning_effort?: string | null
   service_tier?: string | null
+  time_pricing?: {
+    timezone: string
+    window_id?: string | null
+    price_multiplier: number
+    source?: string | null
+    request_started_at_unix_ms?: number | null
+  } | null
   reasoning_tokens?: number
   error_message?: string | null
 }
@@ -165,6 +172,22 @@ const modelBadges = computed<ModelBadgePresentation[]>(() => {
     })
   }
 
+  if (props.context === 'usage' && props.record.time_pricing) {
+    const timePricing = props.record.time_pricing
+    const isPeak = Boolean(normalizeText(timePricing.window_id))
+    const multiplier = formatMultiplier(timePricing.price_multiplier)
+    badges.push({
+      key: 'time_pricing',
+      label: isPeak ? `高峰 ×${multiplier}` : '非高峰',
+      variant: 'outline',
+      className: isPeak
+        ? 'border-orange-500/30 bg-orange-500/5 text-orange-600 dark:text-orange-300'
+        : 'border-border/70 bg-muted/30 text-muted-foreground',
+      title: buildTimePricingTitle(timePricing),
+      ariaLabel: isPeak ? `命中高峰时段，价格倍率 ${multiplier}` : '未命中分时窗口，按标准价格计费',
+    })
+  }
+
   if (props.showCyberBadge && (props.cyber ?? isCyberPolicyError(props.record.error_message))) {
     badges.push({
       key: 'cyber',
@@ -200,5 +223,18 @@ function normalizeText(value: string | null | undefined): string | null {
 function formatCompactTokens(value: number): string {
   if (value < 1000) return `${value} Tokens`
   return `${(value / 1000).toFixed(value >= 10000 ? 0 : 1)}K Tokens`
+}
+
+function formatMultiplier(value: number): string {
+  return Number.isFinite(value) ? String(Number(value.toFixed(4))) : '1'
+}
+
+function buildTimePricingTitle(timePricing: NonNullable<UsageModelDisplayRecord['time_pricing']>): string {
+  const lines = [
+    timePricing.window_id ? `命中窗口：${timePricing.window_id}` : '未命中分时窗口',
+    `时区：${timePricing.timezone}`,
+    `计价倍率：×${formatMultiplier(timePricing.price_multiplier)}`,
+  ]
+  return lines.join('\n')
 }
 </script>

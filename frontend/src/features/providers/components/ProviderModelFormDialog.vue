@@ -184,7 +184,6 @@
           </TabsList>
 
           <TieredPricingEditor
-            v-show="billingMode === 'token' || billingMode === 'image'"
             ref="tieredPricingEditorRef"
             v-model="tieredPricing"
             class="mt-3"
@@ -192,7 +191,8 @@
             :show-token-pricing="billingMode === 'token'"
             :show-image-pricing="isImageGenerationEnabled"
             :show-image-editor="billingMode === 'image'"
-            :show-processing-tier-multiplier-controls="true"
+            :show-processing-tier-controls="billingMode === 'token' || billingMode === 'image'"
+            :show-processing-tier-multiplier-controls="billingMode === 'token' || billingMode === 'image'"
           />
 
           <TabsContent

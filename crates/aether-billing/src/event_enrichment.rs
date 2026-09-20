@@ -14,7 +14,9 @@ use crate::{
     BillingUsageInput,
 };
 
-const SETTLEMENT_SNAPSHOT_SCHEMA_VERSION: &str = "3.0";
+// 4.0 adds the time based pricing resolution (matching window, multiplier and the clock it was
+// evaluated against) to the settlement snapshot.
+const SETTLEMENT_SNAPSHOT_SCHEMA_VERSION: &str = "4.0";
 
 #[async_trait]
 pub trait BillingModelContextLookup: Send + Sync {
@@ -234,6 +236,7 @@ fn calculate_billing_computation(
         // The response-reported tier remains usage audit data, but it is not authoritative for
         // pricing. Settlement follows the final request that was sent upstream.
         actual_processing_tier: None,
+        request_started_at_unix_ms: usage_event_request_started_at_unix_ms(&event.data),
         request_count,
         input_tokens: event.data.input_tokens.unwrap_or_default() as i64,
         output_tokens: event.data.output_tokens.unwrap_or_default() as i64,
@@ -287,6 +290,28 @@ fn usage_event_processing_tiers(
     );
 
     UsageEventProcessingTiers { requested }
+}
+
+/// Reads the instant the final upstream request was dispatched.
+///
+/// The gateway records this while observing the upstream response, so it is absent for attempts
+/// that never reached one and for cancelled requests. Those bill at the standard price: inventing
+/// a peak surcharge from a substitute clock would charge users for Aether's own retries.
+fn usage_event_request_started_at_unix_ms(
+    data: &aether_usage_runtime::UsageEventData,
+) -> Option<i64> {
+    data.request_metadata
+        .as_ref()
+        .and_then(Value::as_object)
+        .and_then(|object| {
+            object.get(aether_data_contracts::repository::usage::PROVIDER_REQUEST_STARTED_AT_UNIX_MS_METADATA_KEY)
+        })
+        .and_then(|value| {
+            value
+                .as_i64()
+                .or_else(|| value.as_u64().and_then(|value| i64::try_from(value).ok()))
+        })
+        .filter(|value| *value > 0)
 }
 
 fn usage_event_provider_cache_ttl_minutes(
@@ -446,6 +471,10 @@ fn merge_billing_snapshot_metadata(
         Value::from(computation.rate_multiplier),
     );
     metadata.insert(
+        "time_pricing_multiplier".to_string(),
+        Value::from(computation.pricing_resolution.time_pricing_multiplier()),
+    );
+    metadata.insert(
         "is_free_tier".to_string(),
         Value::from(computation.is_free_tier),
     );
@@ -479,6 +508,15 @@ fn build_settlement_snapshot(
             "tiered_pricing": resolution.tiered_pricing,
             "price_per_request": resolution.price_per_request,
             "rate_multiplier": computation.rate_multiplier,
+            "time_pricing": resolution.time_pricing.as_ref().map(|time_pricing| {
+                json!({
+                    "timezone": time_pricing.timezone.clone(),
+                    "window_id": time_pricing.window_id.clone(),
+                    "price_multiplier": time_pricing.price_multiplier,
+                    "source": time_pricing.source.as_str(),
+                    "request_started_at_unix_ms": resolution.request_started_at_unix_ms,
+                })
+            }),
             "is_free_tier": computation.is_free_tier,
         },
         "billing_plan_snapshot": {
@@ -1521,6 +1559,193 @@ mod tests {
                 .and_then(|value| value.get("status"))
                 .and_then(Value::as_str),
             Some("complete")
+        );
+    }
+
+    // 2026-09-21 is a Monday and 2026-09-20 the preceding Sunday, both at 10:00 +08:00.
+    const SHANGHAI_MONDAY_PEAK_UNIX_MS: i64 = 1_789_956_000_000;
+    // 2026-09-21 12:00 +08:00: the exclusive end of the morning peak window.
+    const SHANGHAI_MONDAY_PEAK_END_UNIX_MS: i64 = 1_789_963_200_000;
+    const SHANGHAI_SUNDAY_UNIX_MS: i64 = 1_789_869_600_000;
+
+    fn time_priced_context() -> StoredBillingModelContext {
+        StoredBillingModelContext::new(
+            "provider-1".to_string(),
+            Some("pay_as_you_go".to_string()),
+            Some("key-1".to_string()),
+            None,
+            None,
+            "global-model-1".to_string(),
+            "gpt-5.6-sol".to_string(),
+            None,
+            None,
+            Some(json!({
+                "tiers": [{
+                    "up_to": null,
+                    "input_price_per_1m": 5.0,
+                    "output_price_per_1m": 30.0
+                }],
+                "time_pricing": {
+                    "timezone": "Asia/Shanghai",
+                    "windows": [{
+                        "id": "workday-morning-peak",
+                        "weekdays": ["monday", "tuesday", "wednesday", "thursday", "friday"],
+                        "start": "09:00",
+                        "end": "12:00",
+                        "price_multiplier": 2
+                    }]
+                }
+            })),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("billing context should build")
+    }
+
+    async fn settled_event_recording_request_time(request_started_at_unix_ms: i64) -> UsageEvent {
+        let lookup = TestLookup {
+            name_context: Some(time_priced_context()),
+            model_id_context: None,
+        };
+        let mut event = UsageEvent::new(
+            UsageEventType::Completed,
+            "req-time-pricing",
+            UsageEventData {
+                provider_name: "DeepSeek".to_string(),
+                provider_id: Some("provider-1".to_string()),
+                model: "gpt-5.6-sol".to_string(),
+                input_tokens: Some(1_000),
+                output_tokens: Some(500),
+                request_metadata: Some(json!({
+                    "provider_request_started_at_unix_ms": request_started_at_unix_ms
+                })),
+                ..UsageEventData::default()
+            },
+        );
+        enrich_usage_event_with_billing(&lookup, &mut event)
+            .await
+            .expect("time priced enrichment should succeed");
+        event
+    }
+
+    #[tokio::test]
+    async fn peak_window_doubles_the_base_cost_and_records_the_matching_window() {
+        let off_peak = settled_event_recording_request_time(SHANGHAI_SUNDAY_UNIX_MS).await;
+        let peak = settled_event_recording_request_time(SHANGHAI_MONDAY_PEAK_UNIX_MS).await;
+
+        assert!(off_peak.data.total_cost_usd.unwrap_or_default() > 0.0);
+        assert_eq!(
+            peak.data.total_cost_usd,
+            off_peak.data.total_cost_usd.map(|cost| cost * 2.0)
+        );
+
+        let pricing_snapshot = |event: &UsageEvent| {
+            event
+                .data
+                .request_metadata
+                .as_ref()
+                .and_then(|value| value.get("settlement_snapshot"))
+                .and_then(|value| value.get("pricing_snapshot"))
+                .and_then(|value| value.get("time_pricing"))
+                .cloned()
+                .expect("time pricing snapshot")
+        };
+        assert_eq!(
+            pricing_snapshot(&peak)["window_id"].as_str(),
+            Some("workday-morning-peak")
+        );
+        assert_eq!(
+            pricing_snapshot(&peak)["request_started_at_unix_ms"].as_i64(),
+            Some(SHANGHAI_MONDAY_PEAK_UNIX_MS)
+        );
+        assert_eq!(
+            pricing_snapshot(&peak)["price_multiplier"].as_f64(),
+            Some(2.0)
+        );
+        assert_eq!(pricing_snapshot(&off_peak)["window_id"], Value::Null);
+        assert_eq!(
+            off_peak
+                .data
+                .request_metadata
+                .as_ref()
+                .and_then(|value| value.get("time_pricing_multiplier"))
+                .and_then(Value::as_f64),
+            Some(1.0)
+        );
+
+        // The per-component columns are what the request detail view shows, so a multiplied total
+        // with un-multiplied parts would make the row contradict its own cost.
+        let settlement_snapshot = |event: &UsageEvent| {
+            event
+                .data
+                .request_metadata
+                .as_ref()
+                .and_then(|value| value.get("settlement_snapshot"))
+                .cloned()
+                .expect("settlement snapshot")
+        };
+        for event in [&off_peak, &peak] {
+            let snapshot = settlement_snapshot(event);
+            let breakdown_sum: f64 = snapshot["cost_breakdown"]
+                .as_object()
+                .expect("cost breakdown")
+                .values()
+                .filter_map(Value::as_f64)
+                .sum();
+            assert_eq!(snapshot["total_cost"].as_f64(), Some(breakdown_sum));
+            assert_eq!(snapshot["total_cost"].as_f64(), event.data.total_cost_usd);
+        }
+    }
+
+    #[tokio::test]
+    async fn the_exclusive_end_of_a_window_bills_at_the_standard_price() {
+        let end_of_peak =
+            settled_event_recording_request_time(SHANGHAI_MONDAY_PEAK_END_UNIX_MS).await;
+        let off_peak = settled_event_recording_request_time(SHANGHAI_SUNDAY_UNIX_MS).await;
+
+        assert_eq!(
+            end_of_peak.data.total_cost_usd,
+            off_peak.data.total_cost_usd
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unknown_request_time_bills_at_the_standard_price() {
+        let lookup = TestLookup {
+            name_context: Some(time_priced_context()),
+            model_id_context: None,
+        };
+        let mut event = UsageEvent::new(
+            UsageEventType::Completed,
+            "req-time-pricing-unknown",
+            UsageEventData {
+                provider_name: "DeepSeek".to_string(),
+                provider_id: Some("provider-1".to_string()),
+                model: "gpt-5.6-sol".to_string(),
+                input_tokens: Some(1_000),
+                output_tokens: Some(500),
+                request_metadata: None,
+                ..UsageEventData::default()
+            },
+        );
+
+        enrich_usage_event_with_billing(&lookup, &mut event)
+            .await
+            .expect("enrichment without a clock reading should succeed");
+
+        let off_peak = settled_event_recording_request_time(SHANGHAI_SUNDAY_UNIX_MS).await;
+        assert_eq!(event.data.total_cost_usd, off_peak.data.total_cost_usd);
+        assert_eq!(
+            event
+                .data
+                .request_metadata
+                .as_ref()
+                .and_then(|value| value.get("time_pricing_multiplier"))
+                .and_then(Value::as_f64),
+            Some(1.0)
         );
     }
 }

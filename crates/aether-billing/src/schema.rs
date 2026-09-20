@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
-pub const BILLING_SNAPSHOT_SCHEMA_VERSION: &str = "2.0";
+// 3.0 marks that `cost_breakdown` and `total_cost` already include the peak/off-peak multiplier,
+// so consumers no longer read them as the bare catalog price.
+pub const BILLING_SNAPSHOT_SCHEMA_VERSION: &str = "3.0";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -36,6 +38,7 @@ pub struct BillingSnapshot {
     pub scope: Option<String>,
     pub expression: Option<String>,
     pub resolved_dimensions: BTreeMap<String, serde_json::Value>,
+    /// Formula inputs resolved from the selected catalog before time and API-key multipliers.
     pub resolved_variables: BTreeMap<String, serde_json::Value>,
     pub cost_breakdown: BTreeMap<String, f64>,
     pub total_cost: f64,

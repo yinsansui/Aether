@@ -104,7 +104,7 @@ function hasStandardPricingData(pricing: ProviderTieredPricingConfig): boolean {
 
 function pricingRoot(pricing: ProviderTieredPricingConfig): Record<string, unknown> {
   return Object.fromEntries(
-    Object.entries(pricing).filter(([key]) => key !== 'processing_tiers'),
+    Object.entries(pricing).filter(([key]) => key !== 'processing_tiers' && key !== 'time_pricing'),
   )
 }
 
@@ -172,6 +172,15 @@ export function mergeProviderTieredPricingForEditing(
   if (Object.keys(mergedProcessingTiers).length > 0) {
     mergedRoot.processing_tiers = mergedProcessingTiers
   }
+  if (hasOwn(providerOverride, 'time_pricing')) {
+    mergedRoot.time_pricing = providerOverride.time_pricing === undefined
+      ? null
+      : cloneJson(providerOverride.time_pricing)
+  } else if (globalDefault && hasOwn(globalDefault, 'time_pricing')) {
+    mergedRoot.time_pricing = globalDefault.time_pricing === undefined
+      ? null
+      : cloneJson(globalDefault.time_pricing)
+  }
   return cloneJson(mergedRoot) as TieredPricingConfig
 }
 
@@ -188,17 +197,34 @@ export function buildProviderTieredPricingOverride(
   if (!originalEditorPricing) return cloneJson(finalPricing)
 
   const originalProcessingTiers = originalProviderOverride?.processing_tiers
+  const originalTimePricing = originalProviderOverride?.time_pricing
   const preservedProcessingTiers = hasOwn(originalProviderOverride || {}, 'processing_tiers')
     ? originalProcessingTiers === undefined
       ? undefined
       : cloneJson(originalProcessingTiers)
     : undefined
+  const preservesTimePricing = hasOwn(originalProviderOverride || {}, 'time_pricing')
   let result = cloneJson(originalProviderOverride || {})
 
   if (!jsonValuesEqual(pricingRoot(finalPricing), pricingRoot(originalEditorPricing))) {
     result = cloneJson(pricingRoot(finalPricing)) as ProviderTieredPricingConfig
     if (preservedProcessingTiers !== undefined || originalProcessingTiers === null) {
       result.processing_tiers = preservedProcessingTiers ?? null
+    }
+    if (preservesTimePricing) {
+      result.time_pricing = originalTimePricing === undefined ? null : cloneJson(originalTimePricing)
+    }
+  }
+
+  const finalHasTimePricing = hasOwn(finalPricing, 'time_pricing')
+  const baselineHasTimePricing = hasOwn(originalEditorPricing, 'time_pricing')
+  const finalTimePricing = finalHasTimePricing ? finalPricing.time_pricing : undefined
+  const baselineTimePricing = baselineHasTimePricing ? originalEditorPricing.time_pricing : undefined
+  if (!jsonValuesEqual(finalTimePricing, baselineTimePricing)) {
+    if (finalTimePricing === undefined || finalTimePricing === null) {
+      result.time_pricing = null
+    } else {
+      result.time_pricing = cloneJson(finalTimePricing)
     }
   }
 

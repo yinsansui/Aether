@@ -557,6 +557,12 @@
       </div>
     </div>
 
+    <TimePricingEditor
+      ref="timePricingEditorRef"
+      :model-value="timePricingInitial"
+      @update:model-value="onTimePricingUpdate"
+    />
+
     <!-- 验证提示 -->
     <p
       v-if="validationError"
@@ -579,8 +585,10 @@ import type {
   ImageOutputPriceRange,
   PricingTier,
   ProcessingTierPricingConfig,
+  TimePricingConfig,
   TieredPricingConfig,
 } from '@/api/endpoints/types'
+import TimePricingEditor from '@/features/models/components/TimePricingEditor.vue'
 import {
   cacheMultiplierFromPrice,
   cachePriceFromInputMultiplier,
@@ -666,6 +674,15 @@ const IMAGE_OUTPUT_QUALITIES: ImageOutputQuality[] = ['low', 'medium', 'high']
 const STANDARD_PRICING_SCOPE = 'standard'
 const PROCESSING_PRICING_SCOPE_PREFIX = 'processing:'
 const UNBOUNDED_THRESHOLD_VALUE = -2
+const TIME_PRICING_WEEKDAY_ALIASES: Record<string, string> = {
+  mon: 'monday',
+  tue: 'tuesday',
+  wed: 'wednesday',
+  thu: 'thursday',
+  fri: 'friday',
+  sat: 'saturday',
+  sun: 'sunday',
+}
 const KNOWN_PROCESSING_TIERS = [
   { key: 'priority', label: 'Fast（OpenAI）' },
   { key: 'fast', label: 'Fast（Claude）' },
@@ -681,6 +698,11 @@ const COMPACT_PROCESSING_TIERS = [
 
 // 本地状态
 const basePricingConfig = ref<Record<string, unknown>>({})
+const timePricingEditorRef = ref<{ getValidationError: () => string | null } | null>(null)
+// `timePricingInitial` seeds the child editor and only changes when the incoming catalog does;
+// `timePricingConfig` carries whatever the user has edited since.
+const timePricingInitial = ref<TimePricingConfig | null>(null)
+const timePricingConfig = ref<TimePricingConfig | null>(null)
 const standardTiers = ref<PricingTier[]>([])
 const processingTierConfigs = ref<Record<string, ProcessingTierPricingConfig>>({})
 const activePricingScope = ref(STANDARD_PRICING_SCOPE)
@@ -854,6 +876,7 @@ watch(
           : 'absent'
       processingTierKeysEdited.value = false
       resetScopeState()
+      initializeTimePricing(clonedValue.time_pricing)
       initializeProcessingTierMultiplierDrafts()
       initializeScopeCacheState(STANDARD_PRICING_SCOPE, standardTiers.value)
       initializeScopeImagePricingState(STANDARD_PRICING_SCOPE, clonedValue)
@@ -879,6 +902,7 @@ watch(
       processingTierKeysEdited.value = false
       originalEmptyProcessingTiers.value = 'absent'
       resetScopeState()
+      initializeTimePricing(null)
       initializeProcessingTierMultiplierDrafts()
       initializeScopeCacheState(STANDARD_PRICING_SCOPE, standardTiers.value)
       initializeScopeImagePricingState(STANDARD_PRICING_SCOPE, {})
@@ -900,6 +924,31 @@ watch(
 
 function processingTierScope(key: string): string {
   return `${PROCESSING_PRICING_SCOPE_PREFIX}${key}`
+}
+
+function initializeTimePricing(value: unknown) {
+  const config = isRecord(value) && Array.isArray(value.windows) && value.windows.length > 0
+    ? cloneJson(value) as TimePricingConfig
+    : null
+  const normalizedConfig = config
+    ? {
+        ...config,
+        windows: config.windows.map(window => ({
+          ...window,
+          weekdays: window.weekdays.map((weekday) => {
+            const normalized = weekday.trim().toLowerCase()
+            return TIME_PRICING_WEEKDAY_ALIASES[normalized] ?? normalized
+          }),
+        })),
+      }
+    : null
+  timePricingInitial.value = normalizedConfig
+  timePricingConfig.value = normalizedConfig ? cloneJson(normalizedConfig) : null
+}
+
+function onTimePricingUpdate(value: TimePricingConfig | null) {
+  timePricingConfig.value = value
+  syncToParent()
 }
 
 function processingTierKeyFromScope(scope: string): string | null {
@@ -1315,6 +1364,9 @@ const validationError = computed(() => {
   const multiplierError = validateProcessingTierMultipliers()
   if (multiplierError) return multiplierError
 
+  const timePricingError = timePricingEditorRef.value?.getValidationError()
+  if (timePricingError) return timePricingError
+
   const scopes = [
     STANDARD_PRICING_SCOPE,
     ...(props.showProcessingTierControls
@@ -1567,6 +1619,13 @@ defineExpose({
 function buildPricingConfig(includeAutomaticCache: boolean): TieredPricingConfig {
   const config = cloneJson(basePricingConfig.value) as TieredPricingConfig
   config.tiers = buildTiersForScope(STANDARD_PRICING_SCOPE, includeAutomaticCache)
+  // Dropping the key entirely when time pricing is off keeps an untouched catalog byte-identical,
+  // so the provider override is only treated as modified when the user really changed something.
+  if (timePricingConfig.value) {
+    config.time_pricing = cloneJson(timePricingConfig.value)
+  } else {
+    delete config.time_pricing
+  }
 
   if (props.showProcessingTierControls) {
     const processingTierEntries: Array<[string, ProcessingTierPricingConfig]> = []

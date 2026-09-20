@@ -382,6 +382,10 @@ async fn calculate_execution_plan_cost_upper_bound(
     estimate.requested_processing_tier = requested_processing_tier.map(ToOwned::to_owned);
     estimate.cache_ttl_minutes = cache_ttl_minutes;
     estimate.max_output_tokens = max_output_tokens;
+    // Pre-authorization happens before the upstream dispatch, so the admission instant is the
+    // closest available reading of the billing hour. Leaving it unset would reserve off-peak funds
+    // for a request that settles at the peak price and can outrun its own balance.
+    estimate.request_started_at_unix_ms = i64::try_from(crate::clock::current_unix_ms()).ok();
     aether_billing::BillingService::new()
         .estimate_authorization_cost_upper_bound(
             &aether_billing::BillingModelPricingSnapshot::from(context),
@@ -1006,10 +1010,21 @@ mod tests {
         input_tokens: i64,
         max_output_tokens: Option<i64>,
     ) -> Option<f64> {
+        estimate_from_billing_context_at(context, api_format, input_tokens, max_output_tokens, None)
+    }
+
+    fn estimate_from_billing_context_at(
+        context: &StoredBillingModelContext,
+        api_format: &str,
+        input_tokens: i64,
+        max_output_tokens: Option<i64>,
+        request_started_at_unix_ms: Option<i64>,
+    ) -> Option<f64> {
         let mut estimate =
             aether_billing::BillingAuthorizationEstimateInput::new("chat", input_tokens);
         estimate.api_format = Some(api_format.to_string());
         estimate.max_output_tokens = max_output_tokens;
+        estimate.request_started_at_unix_ms = request_started_at_unix_ms;
         aether_billing::BillingService::new()
             .estimate_authorization_cost_upper_bound(
                 &aether_billing::BillingModelPricingSnapshot::from(context),
@@ -2068,6 +2083,93 @@ mod tests {
                 .expect("estimate should be bounded");
 
         assert_eq!(estimate, 6.5);
+    }
+
+    // 2026-09-21 is a Monday, so 10:00 +08:00 sits inside the workday morning peak; the preceding
+    // Sunday at the same wall clock does not.
+    const SHANGHAI_MONDAY_PEAK_UNIX_MS: i64 = 1_789_956_000_000;
+    const SHANGHAI_SUNDAY_UNIX_MS: i64 = 1_789_869_600_000;
+
+    #[test]
+    fn daily_quota_estimate_reserves_the_peak_price_inside_a_time_window() {
+        let context = billing_context_with_pricing(
+            Some(json!({
+                "tiers": [{
+                    "up_to": null,
+                    "input_price_per_1m": 3.0,
+                    "output_price_per_1m": 15.0
+                }],
+                "time_pricing": {
+                    "timezone": "Asia/Shanghai",
+                    "windows": [{
+                        "id": "workday-morning-peak",
+                        "weekdays": ["monday", "tuesday", "wednesday", "thursday", "friday"],
+                        "start": "09:00",
+                        "end": "12:00",
+                        "price_multiplier": 2
+                    }]
+                }
+            })),
+            None,
+            None,
+            None,
+        );
+
+        let estimate_at = |request_started_at_unix_ms: i64| {
+            estimate_from_billing_context_at(
+                &context,
+                "openai:chat",
+                1_000_000,
+                Some(1_000_000),
+                Some(request_started_at_unix_ms),
+            )
+            .expect("estimate should be bounded")
+        };
+        let off_peak = estimate_at(SHANGHAI_SUNDAY_UNIX_MS);
+        let peak = estimate_at(SHANGHAI_MONDAY_PEAK_UNIX_MS);
+
+        assert!(off_peak > 0.0, "the fixture must price above zero");
+        assert_eq!(peak, off_peak * 2.0);
+    }
+
+    #[test]
+    fn daily_quota_estimate_without_a_clock_reserves_the_standard_price() {
+        let context = billing_context_with_pricing(
+            Some(json!({
+                "tiers": [{
+                    "up_to": null,
+                    "input_price_per_1m": 3.0,
+                    "output_price_per_1m": 15.0
+                }],
+                "time_pricing": {
+                    "timezone": "Asia/Shanghai",
+                    "windows": [{
+                        "id": "workday-morning-peak",
+                        "weekdays": ["monday", "tuesday", "wednesday", "thursday", "friday"],
+                        "start": "09:00",
+                        "end": "12:00",
+                        "price_multiplier": 2
+                    }]
+                }
+            })),
+            None,
+            None,
+            None,
+        );
+
+        let unknown_clock =
+            estimate_from_billing_context(&context, "openai:chat", 1_000_000, Some(1_000_000))
+                .expect("estimate should be bounded");
+        let off_peak = estimate_from_billing_context_at(
+            &context,
+            "openai:chat",
+            1_000_000,
+            Some(1_000_000),
+            Some(SHANGHAI_SUNDAY_UNIX_MS),
+        )
+        .expect("estimate should be bounded");
+
+        assert_eq!(unknown_clock, off_peak);
     }
 
     #[test]

@@ -350,6 +350,8 @@ fn admin_usage_strip_settlement_metadata(metadata: &mut serde_json::Map<String, 
     metadata.remove("settlement_snapshot_schema_version");
     metadata.remove("billing_dimensions");
     metadata.remove("rate_multiplier");
+    // The peak/off-peak multiplier is part of the same settlement picture as rate_multiplier.
+    metadata.remove("time_pricing_multiplier");
     metadata.remove("is_free_tier");
     metadata.remove("input_price_per_1m");
     metadata.remove("output_price_per_1m");
@@ -1446,6 +1448,10 @@ pub fn admin_usage_record_json(
         .as_object_mut()
         .expect("admin usage record payload should be an object");
     object.insert(
+        "time_pricing".to_string(),
+        json!(admin_usage_time_pricing(item)),
+    );
+    object.insert(
         "end_to_end_time_ms".to_string(),
         json!(admin_usage_metadata_u64(item, "end_to_end_time_ms")),
     );
@@ -1524,6 +1530,13 @@ pub fn admin_usage_record_json(
         );
     }
     payload
+}
+
+fn admin_usage_time_pricing(item: &StoredRequestUsageAudit) -> Option<Value> {
+    item.request_metadata
+        .as_ref()
+        .and_then(|metadata| metadata.pointer("/settlement_snapshot/pricing_snapshot/time_pricing"))
+        .cloned()
 }
 
 pub fn admin_usage_total_tokens(item: &StoredRequestUsageAudit) -> u64 {
@@ -2869,6 +2882,44 @@ mod tests {
             assert_eq!(payload["first_byte_time_ms"], 120);
             assert_eq!(payload["end_to_end_time_ms"], 10_626);
             assert_eq!(payload["end_to_end_first_byte_time_ms"], 10_120);
+        }
+    }
+
+    #[test]
+    fn admin_usage_record_exposes_settled_peak_and_off_peak_facts() {
+        for (window_id, multiplier, expected_window) in [
+            (Some("sunday-peak"), 2.0, json!("sunday-peak")),
+            (None, 1.0, json!(null)),
+        ] {
+            let item = StoredRequestUsageAudit {
+                request_metadata: Some(json!({
+                    "settlement_snapshot": {
+                        "pricing_snapshot": {
+                            "time_pricing": {
+                                "timezone": "Asia/Shanghai",
+                                "window_id": window_id,
+                                "price_multiplier": multiplier,
+                                "source": "provider_override",
+                                "request_started_at_unix_ms": 1_789_872_600_000_u64
+                            }
+                        }
+                    }
+                })),
+                ..sample_usage("completed", Some(200), None)
+            };
+
+            let record = admin_usage_record_json(
+                &item,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                false,
+                false,
+                None,
+            );
+
+            assert_eq!(record["time_pricing"]["timezone"], "Asia/Shanghai");
+            assert_eq!(record["time_pricing"]["window_id"], expected_window);
+            assert_eq!(record["time_pricing"]["price_multiplier"], multiplier);
         }
     }
 

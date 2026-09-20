@@ -40,6 +40,7 @@ impl BillingService {
             .resolve_pricing_checked(
                 input.requested_processing_tier.as_deref(),
                 input.actual_processing_tier.as_deref(),
+                input.request_started_at_unix_ms,
             )
             .map_err(|err| ExpressionEvaluationError::Failed(err.to_string()))?;
         self.calculate_with_resolution(pricing, input, pricing_resolution)
@@ -51,7 +52,10 @@ impl BillingService {
         estimate: &BillingAuthorizationEstimateInput,
     ) -> Result<Option<f64>, ExpressionEvaluationError> {
         let Some(pricing_resolutions) = pricing
-            .resolve_authorization_pricing_candidates(estimate.requested_processing_tier.as_deref())
+            .resolve_authorization_pricing_candidates(
+                estimate.requested_processing_tier.as_deref(),
+                estimate.request_started_at_unix_ms,
+            )
             .map_err(|err| ExpressionEvaluationError::Failed(err.to_string()))?
         else {
             return Ok(None);
@@ -80,6 +84,7 @@ impl BillingService {
             api_format: estimate.api_format.clone(),
             requested_processing_tier: estimate.requested_processing_tier.clone(),
             actual_processing_tier: None,
+            request_started_at_unix_ms: estimate.request_started_at_unix_ms,
             input_tokens,
             output_tokens,
             cache_ttl_minutes: estimate
@@ -255,17 +260,21 @@ impl BillingService {
             FormulaEvaluationStatus::Complete => BillingSnapshotStatus::Complete,
             FormulaEvaluationStatus::Incomplete => BillingSnapshotStatus::Incomplete,
         };
-        let total_cost = if matches!(status, BillingSnapshotStatus::Complete) {
-            result.cost
+        let time_pricing_multiplier = pricing_resolution.time_pricing_multiplier();
+        let (total_cost, cost_breakdown) = if matches!(status, BillingSnapshotStatus::Complete) {
+            // Base catalog price, then the peak/off-peak multiplier, then the API key rate
+            // multiplier. Time is a property of when the request ran, not of which key paid for
+            // it, so it has to land before the key multiplier.
+            scale_settled_costs(result.cost, result.cost_breakdown, time_pricing_multiplier)?
         } else {
-            0.0
+            (0.0, result.cost_breakdown)
         };
         let rate_multiplier = pricing.rate_multiplier_for_api_format(input.api_format.as_deref());
         let is_free_tier = pricing.is_free_tier();
         let actual_total_cost = if is_free_tier {
             0.0
         } else {
-            quantize_cost(total_cost * rate_multiplier)
+            checked_quantized_product(total_cost, rate_multiplier, "API key rate multiplier")?
         };
 
         Ok(BillingComputation {
@@ -280,7 +289,7 @@ impl BillingService {
                     expression: Some(rule.expression),
                     resolved_dimensions: result.resolved_dimensions,
                     resolved_variables: result.resolved_variables,
-                    cost_breakdown: result.cost_breakdown,
+                    cost_breakdown,
                     total_cost,
                     tier_index: result.tier_index,
                     tier_info: result.tier_info,
@@ -308,8 +317,65 @@ fn pricing_has_positive_output_rate(pricing: &Value) -> bool {
         .any(|price| price.is_finite() && price > 0.0)
 }
 
+/// Applies the peak/off-peak multiplier to every component of the cost breakdown.
+///
+/// The breakdown feeds per-component cost columns and the request detail view, so leaving it at
+/// the base price while the total is multiplied would make the parts stop adding up to the charge.
+fn scale_settled_costs(
+    base_total_cost: f64,
+    breakdown: BTreeMap<String, f64>,
+    time_pricing_multiplier: f64,
+) -> Result<(f64, BTreeMap<String, f64>), ExpressionEvaluationError> {
+    let mut total_cost = checked_quantized_product(
+        base_total_cost,
+        time_pricing_multiplier,
+        "time pricing multiplier",
+    )?;
+    let base_breakdown_sum = quantize_cost(breakdown.values().sum());
+    let breakdown_fully_accounts_for_total =
+        !breakdown.is_empty() && (base_breakdown_sum - base_total_cost).abs() <= 1e-8;
+    let scaled_breakdown = breakdown
+        .into_iter()
+        .map(|(key, value)| {
+            checked_quantized_product(value, time_pricing_multiplier, "time pricing multiplier")
+                .map(|scaled| (key, scaled))
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
+    if breakdown_fully_accounts_for_total {
+        total_cost = quantize_cost(scaled_breakdown.values().sum());
+    }
+    Ok((total_cost, scaled_breakdown))
+}
+
+fn checked_quantized_product(
+    value: f64,
+    multiplier: f64,
+    label: &str,
+) -> Result<f64, ExpressionEvaluationError> {
+    if !value.is_finite() || value < 0.0 || !multiplier.is_finite() || multiplier < 0.0 {
+        return Err(ExpressionEvaluationError::Failed(format!(
+            "{label} requires finite non-negative operands"
+        )));
+    }
+    let product = value * multiplier;
+    if !product.is_finite() || product < 0.0 {
+        return Err(ExpressionEvaluationError::Failed(format!(
+            "{label} produced an out-of-range billing amount"
+        )));
+    }
+    Ok(quantize_cost(product))
+}
+
 fn billing_computation_is_bounded(computation: &BillingComputation) -> bool {
     computation.cost_result.status == BillingSnapshotStatus::Complete
+        && computation.cost_result.cost.is_finite()
+        && computation.cost_result.cost >= 0.0
+        && computation
+            .cost_result
+            .snapshot
+            .cost_breakdown
+            .values()
+            .all(|value| value.is_finite() && *value >= 0.0)
         && computation.actual_total_cost.is_finite()
         && computation.actual_total_cost >= 0.0
 }
@@ -909,8 +975,8 @@ mod tests {
 
     use super::BillingService;
     use crate::{
-        BillingAuthorizationEstimateInput, BillingModelPricingSnapshot, BillingPricingSource,
-        BillingSnapshotStatus, BillingUsageInput,
+        quantize_cost, BillingAuthorizationEstimateInput, BillingModelPricingSnapshot,
+        BillingPricingSource, BillingSnapshotStatus, BillingUsageInput,
     };
 
     fn pricing() -> BillingModelPricingSnapshot {
@@ -994,6 +1060,7 @@ mod tests {
                     api_format: Some("openai:chat".to_string()),
                     requested_processing_tier: None,
                     actual_processing_tier: None,
+                    request_started_at_unix_ms: None,
                     request_count: 1,
                     input_tokens: 1_000,
                     output_tokens: 500,
@@ -1017,6 +1084,49 @@ mod tests {
     }
 
     #[test]
+    fn time_and_key_multipliers_share_one_quantized_settlement_basis() {
+        let pricing = BillingModelPricingSnapshot {
+            provider_api_key_rate_multipliers: Some(json!({"openai:chat": 0.8})),
+            default_price_per_request: None,
+            default_tiered_pricing: Some(json!({
+                "tiers": [{
+                    "up_to": null,
+                    "input_price_per_1m": 1.0,
+                    "output_price_per_1m": 0.0
+                }],
+                "time_pricing": {
+                    "timezone": "Asia/Shanghai",
+                    "windows": [{
+                        "id": "sunday-peak",
+                        "weekdays": ["sunday"],
+                        "start": "09:00",
+                        "end": "12:00",
+                        "price_multiplier": 1.333333
+                    }]
+                }
+            })),
+            ..pricing()
+        };
+        let result = BillingService::new()
+            .calculate(
+                &pricing,
+                &BillingUsageInput {
+                    api_format: Some("openai:chat".to_string()),
+                    request_started_at_unix_ms: Some(1_789_872_600_000),
+                    input_tokens: 1,
+                    ..BillingUsageInput::new("chat")
+                },
+            )
+            .expect("billing should calculate");
+
+        let breakdown_sum =
+            quantize_cost(result.cost_result.snapshot.cost_breakdown.values().sum());
+        assert_eq!(result.cost_result.cost, breakdown_sum);
+        assert_eq!(result.cost_result.cost, 0.00000133);
+        assert_eq!(result.actual_total_cost, 0.00000106);
+    }
+
+    #[test]
     fn openai_cache_hit_context_does_not_double_count_cache_read() {
         let result = BillingService::new()
             .calculate(
@@ -1026,6 +1136,7 @@ mod tests {
                     api_format: Some("openai:responses".to_string()),
                     requested_processing_tier: None,
                     actual_processing_tier: None,
+                    request_started_at_unix_ms: None,
                     request_count: 1,
                     input_tokens: 1_000,
                     output_tokens: 10,
@@ -1070,6 +1181,7 @@ mod tests {
                     api_format: Some("openai:responses".to_string()),
                     requested_processing_tier: None,
                     actual_processing_tier: None,
+                    request_started_at_unix_ms: None,
                     request_count: 1,
                     input_tokens: 1_000,
                     output_tokens: 10,
@@ -1853,6 +1965,7 @@ mod tests {
                     api_format: Some("openai:image".to_string()),
                     requested_processing_tier: None,
                     actual_processing_tier: None,
+                    request_started_at_unix_ms: None,
                     request_count: 1,
                     input_tokens: 1_000,
                     output_tokens: 20_000,
@@ -1919,6 +2032,7 @@ mod tests {
                     api_format: Some("openai:image".to_string()),
                     requested_processing_tier: None,
                     actual_processing_tier: None,
+                    request_started_at_unix_ms: None,
                     request_count: 1,
                     input_tokens: 1_000,
                     output_tokens: 20_000,
@@ -1972,6 +2086,7 @@ mod tests {
                     api_format: Some("openai:image".to_string()),
                     requested_processing_tier: None,
                     actual_processing_tier: None,
+                    request_started_at_unix_ms: None,
                     request_count: 1,
                     input_tokens: 0,
                     output_tokens: 0,
@@ -2021,6 +2136,7 @@ mod tests {
                     api_format: Some("openai:image".to_string()),
                     requested_processing_tier: None,
                     actual_processing_tier: None,
+                    request_started_at_unix_ms: None,
                     request_count: 1,
                     input_tokens: 0,
                     output_tokens: 0,
@@ -2083,6 +2199,7 @@ mod tests {
                     api_format: Some("openai:image".to_string()),
                     requested_processing_tier: None,
                     actual_processing_tier: None,
+                    request_started_at_unix_ms: None,
                     request_count: 1,
                     input_tokens: 1_000,
                     output_tokens: 20_000,
@@ -2150,6 +2267,7 @@ mod tests {
                     api_format: Some("openai:image".to_string()),
                     requested_processing_tier: None,
                     actual_processing_tier: None,
+                    request_started_at_unix_ms: None,
                     request_count: 1,
                     input_tokens: 1_000,
                     output_tokens: 20_000,
@@ -2250,6 +2368,7 @@ mod tests {
                     api_format: None,
                     requested_processing_tier: None,
                     actual_processing_tier: None,
+                    request_started_at_unix_ms: None,
                     request_count: 1,
                     input_tokens: 1_000,
                     output_tokens: 10,
@@ -2325,6 +2444,7 @@ mod tests {
                     api_format: None,
                     requested_processing_tier: None,
                     actual_processing_tier: None,
+                    request_started_at_unix_ms: None,
                     request_count: 1,
                     input_tokens: 1_000,
                     output_tokens: 10,

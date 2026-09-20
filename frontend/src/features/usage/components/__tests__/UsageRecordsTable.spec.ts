@@ -187,6 +187,31 @@ afterEach(() => {
 })
 
 describe('UsageRecordsTable', () => {
+  it('marks otherwise identical settled rows as peak or off-peak', () => {
+    const root = mountUsageRecordsTable([
+      buildRecord({
+        id: 'peak',
+        time_pricing: {
+          timezone: 'Asia/Shanghai',
+          window_id: 'sunday-peak',
+          price_multiplier: 2,
+        },
+      }),
+      buildRecord({
+        id: 'off-peak',
+        time_pricing: {
+          timezone: 'Asia/Shanghai',
+          window_id: null,
+          price_multiplier: 1,
+        },
+      }),
+    ])
+
+    expect(root.querySelectorAll('[data-usage-model-badge="time_pricing"]')).toHaveLength(4)
+    expect(root.textContent).toContain('高峰 ×2')
+    expect(root.textContent).toContain('非高峰')
+  })
+
   it('shows output TPS after the request completes', () => {
     const root = mountUsageRecordsTable([buildRecord()])
 

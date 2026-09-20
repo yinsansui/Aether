@@ -412,6 +412,19 @@ fn validate_processing_tier_price_multipliers(
     Ok(())
 }
 
+/// Rejects a `time_pricing` block that could not be evaluated at settlement time.
+///
+/// Saving an unevaluatable window would otherwise surface as a billing outage rather than a
+/// configuration error, so the catalog is parsed here with the same parser settlement uses.
+fn validate_time_pricing(
+    field_name: &str,
+    tiered_pricing: Option<&Value>,
+) -> Result<(), crate::DataLayerError> {
+    crate::repository::global_models::parse_time_pricing(field_name, tiered_pricing)
+        .map(|_| ())
+        .map_err(crate::DataLayerError::UnexpectedValue)
+}
+
 fn validate_embedding_global_billing(
     default_price_per_request: Option<f64>,
     default_tiered_pricing: Option<&Value>,
@@ -977,6 +990,7 @@ impl UpsertAdminProviderModelRecord {
             "models.tiered_pricing",
             tiered_pricing.as_ref(),
         )?;
+        validate_time_pricing("models.tiered_pricing", tiered_pricing.as_ref())?;
 
         Ok(Self {
             id,
@@ -1049,6 +1063,10 @@ impl CreateAdminGlobalModelRecord {
             "global_models.default_tiered_pricing",
             default_tiered_pricing.as_ref(),
         )?;
+        validate_time_pricing(
+            "global_models.default_tiered_pricing",
+            default_tiered_pricing.as_ref(),
+        )?;
 
         Ok(Self {
             id,
@@ -1105,6 +1123,10 @@ impl UpdateAdminGlobalModelRecord {
             config.as_ref(),
         )?;
         validate_processing_tier_price_multipliers(
+            "global_models.default_tiered_pricing",
+            default_tiered_pricing.as_ref(),
+        )?;
+        validate_time_pricing(
             "global_models.default_tiered_pricing",
             default_tiered_pricing.as_ref(),
         )?;

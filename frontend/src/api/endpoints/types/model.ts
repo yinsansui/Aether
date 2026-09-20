@@ -58,6 +58,31 @@ export interface TieredPricingConfig {
   image_output_price_default?: number | null
   image_output_price_ranges?: ImageOutputPriceRange[] | null
   processing_tiers?: Record<string, ProcessingTierPricingConfig> | null
+  time_pricing?: TimePricingConfig | null
+  [key: string]: unknown
+}
+
+/** 分时定价窗口；半开区间 [start, end)，`24:00` 表示当日结束，不支持跨午夜。 */
+export interface TimePricingWindow {
+  /** 窗口标识，用于结算审计时指认命中的规则。 */
+  id: string
+  /** 周一为 `monday`，只接受全名或三字母缩写。 */
+  weekdays: string[]
+  start: string
+  end: string
+  price_multiplier: number
+  [key: string]: unknown
+}
+
+/**
+ * 分时定价：按「最终上游请求发出时刻」在该时区下的星期与时段决定价格倍率。
+ *
+ * 未命中任何窗口的请求按 1 倍计价，因此这里只描述高峰等例外时段。
+ */
+export interface TimePricingConfig {
+  /** IANA 时区名，例如 `Asia/Shanghai`。 */
+  timezone: string
+  windows: TimePricingWindow[]
   [key: string]: unknown
 }
 
@@ -71,6 +96,7 @@ export interface ProviderTieredPricingConfig {
   image_output_price_default?: number | null
   image_output_price_ranges?: ImageOutputPriceRange[] | null
   processing_tiers?: Record<string, ProcessingTierPricingConfig> | null
+  time_pricing?: TimePricingConfig | null
   [key: string]: unknown
 }
 
