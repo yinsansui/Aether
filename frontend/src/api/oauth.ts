@@ -18,6 +18,7 @@ export interface OAuthLinkInfo {
   linked_at?: string | null
   last_login_at?: string | null
   provider_enabled?: boolean
+  icon_url?: string | null
 }
 
 export interface OAuthLinksResponse {

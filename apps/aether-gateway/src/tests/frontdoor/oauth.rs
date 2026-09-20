@@ -6,7 +6,7 @@ use aether_data::repository::oauth_providers::{
     InMemoryOAuthProviderRepository, StoredOAuthProviderConfig,
 };
 use aether_data::repository::users::{
-    InMemoryUserReadRepository, StoredUserAuthRecord, StoredUserSessionRecord,
+    InMemoryUserReadRepository, StoredUserAuthRecord, StoredUserSessionRecord, UserReadRepository,
 };
 use aether_runtime_state::{MemoryRuntimeStateConfig, RuntimeState};
 use base64::Engine as _;
@@ -721,6 +721,98 @@ async fn gateway_oauth_account_lists_are_never_cacheable() {
             "{path}"
         );
     }
+
+    gateway_handle.abort();
+}
+
+#[tokio::test]
+async fn gateway_oauth_link_list_carries_provider_icon_url() {
+    let mut provider = sample_identity_oauth_provider("custom_oidc_oa");
+    provider.icon_url = Some("https://example.com/wecom-app-icon.png".to_string());
+    let provider_repository = Arc::new(InMemoryOAuthProviderRepository::seed(vec![provider]));
+    let now = chrono::Utc::now();
+    let user = StoredUserAuthRecord::new(
+        "oauth-icon-user".to_string(),
+        Some("oauth-icon@example.com".to_string()),
+        true,
+        "oauth-icon-user".to_string(),
+        Some("unused-password-hash".to_string()),
+        "user".to_string(),
+        "local".to_string(),
+        None,
+        None,
+        None,
+        true,
+        false,
+        Some(now),
+        Some(now),
+    )
+    .expect("test user should build");
+    let session_id = "oauth-icon-session";
+    let device_id = "oauth-icon-device";
+    let session = StoredUserSessionRecord::new(
+        session_id.to_string(),
+        user.id.clone(),
+        device_id.to_string(),
+        None,
+        StoredUserSessionRecord::hash_refresh_token("unused-refresh-token"),
+        None,
+        None,
+        Some(now),
+        Some(now + chrono::Duration::days(1)),
+        None,
+        None,
+        Some("127.0.0.1".to_string()),
+        Some("oauth-icon-test".to_string()),
+        Some(now),
+        Some(now),
+    )
+    .expect("test session should build");
+    let user_repository = InMemoryUserReadRepository::seed_auth_users([user.clone()]);
+    user_repository
+        .bind_user_oauth_link(
+            &user.id,
+            "custom_oidc_oa",
+            "wecom-subject",
+            Some("YinXiaoYang"),
+            None,
+            None,
+            now,
+        )
+        .await
+        .expect("OAuth link should bind");
+    let data_state = crate::data::GatewayDataState::with_oauth_provider_repository_for_tests(
+        provider_repository,
+    )
+    .with_system_config_values_for_tests(vec![(
+        "module.oauth.enabled".to_string(),
+        serde_json::json!(true),
+    )])
+    .with_user_reader(Arc::new(user_repository));
+    let access_token =
+        build_oauth_test_access_token(&user, session_id, now + chrono::Duration::hours(1));
+    let state = AppState::new()
+        .expect("gateway should build")
+        .with_data_state_for_tests(data_state)
+        .with_auth_users_for_tests([user])
+        .with_auth_session_for_tests(session);
+    let gateway = build_router_with_state(state);
+    let (gateway_url, gateway_handle) = start_server(gateway).await;
+
+    let response = reqwest::Client::new()
+        .get(format!("{gateway_url}/api/user/oauth/links"))
+        .header("authorization", format!("Bearer {access_token}"))
+        .header("x-client-device-id", device_id)
+        .send()
+        .await
+        .expect("OAuth link list request should succeed");
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: serde_json::Value = response.json().await.expect("json body should parse");
+    assert_eq!(payload["links"][0]["provider_type"], "custom_oidc_oa");
+    assert_eq!(
+        payload["links"][0]["icon_url"],
+        "https://example.com/wecom-app-icon.png"
+    );
 
     gateway_handle.abort();
 }

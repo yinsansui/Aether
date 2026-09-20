@@ -44,6 +44,8 @@ pub(crate) struct IdentityOAuthLinkSummary {
     pub(crate) linked_at: Option<String>,
     pub(crate) last_login_at: Option<String>,
     pub(crate) provider_enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) icon_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -146,13 +148,27 @@ pub(crate) async fn list_identity_oauth_links(
     state: &AppState,
     user_id: &str,
 ) -> Result<Vec<IdentityOAuthLinkSummary>, GatewayError> {
-    state
+    let rows = state
         .data
         .list_user_oauth_links(user_id)
         .await
-        .map_err(data_gateway_error)?
+        .map_err(data_gateway_error)?;
+    // 链接摘要本身不存图标，图标只存在 provider 配置里，这里按 provider_type 补一次，
+    // 否则自定义 provider 的已绑定条目只能落到默认图标。
+    let icon_urls = state
+        .list_oauth_provider_configs()
+        .await?
         .into_iter()
+        .filter_map(|provider| provider.icon_url.map(|icon| (provider.provider_type, icon)))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    rows.into_iter()
         .map(map_link_summary)
+        .map(|summary| {
+            summary.map(|mut summary| {
+                summary.icon_url = icon_urls.get(&summary.provider_type).cloned();
+                summary
+            })
+        })
         .collect()
 }
 
@@ -447,6 +463,7 @@ fn map_link_summary(
         linked_at: row.linked_at.map(|value| value.to_rfc3339()),
         last_login_at: row.last_login_at.map(|value| value.to_rfc3339()),
         provider_enabled: row.provider_enabled,
+        icon_url: None,
     })
 }
 
