@@ -12,15 +12,15 @@ function functionBlock(name: string, nextName: string): string {
 }
 
 describe('usage record server filters', () => {
-  it('uses server pagination for normal-user API format and transport filters', () => {
-    expect(source).toContain('shouldUseServerUserRecordFilters({')
-    expect(source).toContain('!isAdminPage.value && !userUsesServerRecordFilters.value')
+  it('prefers server pagination for normal-user records', () => {
+    expect(source).toContain('shouldUseServerUserRecordPagination({')
+    expect(source).toContain('const usesServerRecordPagination = computed(() => isAdminPage.value || userUsesServerPagination.value)')
 
     const apiFormatHandler = functionBlock('handleFilterApiFormatChange', 'handleFilterStatusChange')
     const statusHandler = functionBlock('handleFilterStatusChange', 'handleFilterClientFamilyChange')
-    expect(apiFormatHandler).toContain('isAdminPage.value || userUsesServerRecordFilters.value')
+    expect(apiFormatHandler).toContain('usesServerRecordPagination.value')
     expect(apiFormatHandler).toContain('await loadRecords(')
-    expect(statusHandler).toContain('isAdminPage.value || userUsesServerRecordFilters.value')
+    expect(statusHandler).toContain('usesServerRecordPagination.value')
     expect(statusHandler).toContain('await loadRecords(')
   })
 
@@ -29,17 +29,25 @@ describe('usage record server filters', () => {
     const pageSizeHandler = functionBlock('handlePageSizeChange', 'handleFilterSearchChange')
     const refreshHandler = functionBlock('refreshData', 'handleManualRefresh')
 
-    expect(pageHandler).toContain('isAdminPage.value || userUsesServerRecordFilters.value')
-    expect(pageSizeHandler).toContain('isAdminPage.value || userUsesServerRecordFilters.value')
-    expect(refreshHandler).toContain('isAdminPage.value || userUsesServerRecordFilters.value')
+    expect(pageHandler).toContain('usesServerRecordPagination.value')
+    expect(pageSizeHandler).toContain('usesServerRecordPagination.value')
+    expect(refreshHandler).toContain('userUsesServerPagination.value')
     expect(refreshHandler).toContain('await loadRecords(')
   })
 
   it('keeps retry and fallback filters local because the user API does not accept them', () => {
-    expect(source).toContain('isUserLocalOnlyRecordStatus(filterStatus.value)')
+    expect(source).toContain('shouldUseServerUserRecordPagination({')
+    expect(source).toContain('shouldApplyLocalUserRecordSearch({')
     expect(source).toContain('matchesUsageRecordSearch(record, filterSearch.value)')
 
     const statusHandler = functionBlock('handleFilterStatusChange', 'handleFilterClientFamilyChange')
     expect(statusHandler).toContain('await loadStats(timeRange.value)')
+  })
+
+  it('keeps the client-family filter free of admin analytics refreshes', () => {
+    const clientFamilyHandler = functionBlock('handleFilterClientFamilyChange', 'refreshData')
+
+    expect(clientFamilyHandler).toContain('usesServerRecordPagination.value')
+    expect(clientFamilyHandler).not.toContain('refreshAdminAnalyticsForSelectionChange')
   })
 })

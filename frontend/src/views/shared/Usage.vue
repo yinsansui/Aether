@@ -172,8 +172,8 @@ import {
 } from '@/features/usage/utils/status'
 import { matchesUsageRecordSearch } from '@/features/usage/utils/recordSearch'
 import {
-  isUserLocalOnlyRecordStatus,
-  shouldUseServerUserRecordFilters,
+  shouldApplyLocalUserRecordSearch,
+  shouldUseServerUserRecordPagination,
 } from '@/features/usage/utils/recordFilterPolicy'
 import type { DateRangeParams, FilterStatusValue, RequestStatus, UsageRecord } from '@/features/usage/types'
 import type { UserOption } from '@/features/usage/components/UsageRecordsTable.vue'
@@ -248,6 +248,20 @@ const filterProvider = ref('__all__')
 const filterApiFormat = ref('__all__')
 const filterStatus = ref<FilterStatusValue>('__all__')
 const filterClientFamily = ref('__all__')
+
+// Prefer server pagination for normal users so the backend's default 100-record page cannot be
+// mistaken for the complete result set. Only filters the user API cannot evaluate keep the
+// legacy local filtering behavior.
+const userUsesServerPagination = computed(() => !isAdminPage.value && (
+  shouldUseServerUserRecordPagination({
+    status: filterStatus.value,
+    model: filterModel.value,
+    provider: filterProvider.value,
+    clientFamily: filterClientFamily.value,
+    hideUnknownRecords: hideUnknownRecords.value,
+  })
+))
+const usesServerRecordPagination = computed(() => isAdminPage.value || userUsesServerPagination.value)
 
 // 用户列表（仅管理员页面使用）
 const availableUsers = ref<UserOption[]>([])
@@ -395,7 +409,10 @@ const filteredRecords = computed(() => {
     : [...currentRecords.value]
 
   if (!isAdminPage.value) {
-    if (isUserLocalOnlyRecordStatus(filterStatus.value) && filterSearch.value.trim()) {
+    if (shouldApplyLocalUserRecordSearch({
+      usesServerRecordPagination: usesServerRecordPagination.value,
+      search: filterSearch.value,
+    })) {
       records = records.filter(record => matchesUsageRecordSearch(record, filterSearch.value))
     }
 
@@ -818,8 +835,10 @@ function handleAutoRefreshChange(value: boolean) {
 async function handleHideUnknownRecordsChange(value: boolean) {
   hideUnknownRecords.value = value
   currentPage.value = 1
-  if (isAdminPage.value) {
+  if (usesServerRecordPagination.value) {
     await loadRecords({ page: 1, pageSize: pageSize.value }, getCurrentFilters(), timeRange.value)
+  } else {
+    await loadStats(timeRange.value)
   }
 }
 
@@ -849,21 +868,8 @@ onUnmounted(() => {
   stopGlobalAutoRefresh()
 })
 
-// Retry/fallback are derived from the locally loaded records and are not accepted by the
-// normal-user records API. Keep those statuses entirely local, including when combined with
-// search/API-format filters, so an unsupported status never produces a misleading server total.
-// 普通用户的 API 格式/传输类型/搜索筛选由后端执行，避免只筛选当前已加载页。
-// 模型及后端不支持的 retry/fallback 筛选仍保持现有的本地分页语义。
-const userUsesServerRecordFilters = computed(() => !isAdminPage.value && (
-  shouldUseServerUserRecordFilters({
-    search: filterSearch.value,
-    apiFormat: filterApiFormat.value,
-    status: filterStatus.value,
-  })
-))
-
 const paginatedRecords = computed(() => {
-  if (!isAdminPage.value && !userUsesServerRecordFilters.value) {
+  if (!usesServerRecordPagination.value) {
     const start = (currentPage.value - 1) * pageSize.value
     const end = start + pageSize.value
     return filteredRecords.value.slice(start, end)
@@ -871,9 +877,9 @@ const paginatedRecords = computed(() => {
   return filteredRecords.value
 })
 
-// 用户页面使用前端筛选后的总数，管理员页面使用后端返回的总数
+// Local-only filters use the filtered local page count; server-backed records use the API total.
 const effectiveTotalRecords = computed(() => {
-  if (!isAdminPage.value && !userUsesServerRecordFilters.value) {
+  if (!usesServerRecordPagination.value) {
     return filteredRecords.value.length
   }
   return totalRecords.value
@@ -920,7 +926,7 @@ onMounted(async () => {
       await Promise.all([heatmapPromise, adminUsersPromise])
     })()
   } else {
-    // 用户页面：loadStats 已包含记录加载，不需要单独调用 loadRecords
+    // Load stats first because loadStats still seeds model/provider filter options for users.
     await Promise.allSettled([
       loadStats(timeRange.value).catch(err => {
         log.error('加载统计数据失败:', err)
@@ -930,6 +936,13 @@ onMounted(async () => {
         log.error('加载热力图数据失败:', err)
       })
     ])
+    if (userUsesServerPagination.value) {
+      await loadRecords(
+        { page: currentPage.value, pageSize: pageSize.value },
+        getCurrentFilters(),
+        timeRange.value
+      )
+    }
   }
 
   if (globalAutoRefresh.value && isPageVisible.value) {
@@ -951,7 +964,7 @@ async function handleTimeRangeChange(value: DateRangeParams) {
     return
   }
   await loadStats(timeRange.value)
-  if (userUsesServerRecordFilters.value) {
+  if (userUsesServerPagination.value) {
     await loadRecords({ page: 1, pageSize: pageSize.value }, getCurrentFilters(), timeRange.value)
   }
 }
@@ -959,7 +972,7 @@ async function handleTimeRangeChange(value: DateRangeParams) {
 // 处理分页变化
 async function handlePageChange(page: number) {
   currentPage.value = page
-  if (isAdminPage.value || userUsesServerRecordFilters.value) {
+  if (usesServerRecordPagination.value) {
     await loadRecords({ page, pageSize: pageSize.value }, getCurrentFilters(), timeRange.value)
   }
 }
@@ -968,7 +981,7 @@ async function handlePageChange(page: number) {
 async function handlePageSizeChange(size: number) {
   pageSize.value = size
   currentPage.value = 1  // 重置到第一页
-  if (isAdminPage.value || userUsesServerRecordFilters.value) {
+  if (usesServerRecordPagination.value) {
     await loadRecords({ page: 1, pageSize: size }, getCurrentFilters(), timeRange.value)
   }
 }
@@ -992,9 +1005,7 @@ async function handleFilterSearchChange(value: string) {
   filterSearch.value = value
   currentPage.value = 1
 
-  if (isAdminPage.value) {
-    await loadRecords({ page: 1, pageSize: pageSize.value }, getCurrentFilters(), timeRange.value)
-  } else if (userUsesServerRecordFilters.value) {
+  if (usesServerRecordPagination.value) {
     await loadRecords({ page: 1, pageSize: pageSize.value }, getCurrentFilters(), timeRange.value)
   } else {
     await loadStats(timeRange.value)
@@ -1005,9 +1016,13 @@ async function handleFilterUserChange(value: string) {
   filterUser.value = value
   currentPage.value = 1  // 重置到第一页
 
-  if (isAdminPage.value) {
+  if (usesServerRecordPagination.value) {
     await loadRecords({ page: 1, pageSize: pageSize.value }, getCurrentFilters(), timeRange.value)
-    await refreshAdminAnalyticsForSelectionChange()
+    if (isAdminPage.value) {
+      await refreshAdminAnalyticsForSelectionChange()
+    }
+  } else {
+    await loadStats(timeRange.value)
   }
 }
 
@@ -1015,9 +1030,13 @@ async function handleFilterModelChange(value: string) {
   filterModel.value = value
   currentPage.value = 1  // 重置到第一页
 
-  if (isAdminPage.value) {
+  if (usesServerRecordPagination.value) {
     await loadRecords({ page: 1, pageSize: pageSize.value }, getCurrentFilters(), timeRange.value)
-    await refreshAdminAnalyticsForSelectionChange()
+    if (isAdminPage.value) {
+      await refreshAdminAnalyticsForSelectionChange()
+    }
+  } else {
+    await loadStats(timeRange.value)
   }
 }
 
@@ -1025,9 +1044,13 @@ async function handleFilterProviderChange(value: string) {
   filterProvider.value = value
   currentPage.value = 1
 
-  if (isAdminPage.value) {
+  if (usesServerRecordPagination.value) {
     await loadRecords({ page: 1, pageSize: pageSize.value }, getCurrentFilters(), timeRange.value)
-    await refreshAdminAnalyticsForSelectionChange()
+    if (isAdminPage.value) {
+      await refreshAdminAnalyticsForSelectionChange()
+    }
+  } else {
+    await loadStats(timeRange.value)
   }
 }
 
@@ -1035,7 +1058,7 @@ async function handleFilterApiFormatChange(value: string) {
   filterApiFormat.value = value
   currentPage.value = 1
 
-  if (isAdminPage.value || userUsesServerRecordFilters.value) {
+  if (usesServerRecordPagination.value) {
     await loadRecords({ page: 1, pageSize: pageSize.value }, getCurrentFilters(), timeRange.value)
   } else {
     await loadStats(timeRange.value)
@@ -1046,7 +1069,7 @@ async function handleFilterStatusChange(value: string) {
   filterStatus.value = value as FilterStatusValue
   currentPage.value = 1
 
-  if (isAdminPage.value || userUsesServerRecordFilters.value) {
+  if (usesServerRecordPagination.value) {
     await loadRecords({ page: 1, pageSize: pageSize.value }, getCurrentFilters(), timeRange.value)
   } else {
     await loadStats(timeRange.value)
@@ -1057,8 +1080,10 @@ async function handleFilterClientFamilyChange(value: string) {
   filterClientFamily.value = value
   currentPage.value = 1
 
-  if (isAdminPage.value) {
+  if (usesServerRecordPagination.value) {
     await loadRecords({ page: 1, pageSize: pageSize.value }, getCurrentFilters(), timeRange.value)
+  } else {
+    await loadStats(timeRange.value)
   }
 }
 
@@ -1068,7 +1093,7 @@ async function refreshData() {
   if (refreshInFlight) return refreshInFlight
 
   refreshInFlight = (async () => {
-    if (isAdminPage.value || userUsesServerRecordFilters.value) {
+    if (isAdminPage.value) {
       await loadRecords(
         { page: currentPage.value, pageSize: pageSize.value },
         getCurrentFilters(),
@@ -1078,6 +1103,13 @@ async function refreshData() {
     }
 
     await loadStats(timeRange.value)
+    if (userUsesServerPagination.value) {
+      await loadRecords(
+        { page: currentPage.value, pageSize: pageSize.value },
+        getCurrentFilters(),
+        timeRange.value
+      )
+    }
   })()
 
   try {

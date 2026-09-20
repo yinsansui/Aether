@@ -155,6 +155,21 @@ describe('useUsageData', () => {
     }))
   })
 
+  it('uses the server total for the user page instead of the loaded record count', async () => {
+    const isAdminPage = ref(false)
+    const { loadRecords, currentRecords, totalRecords } = useUsageData({ isAdminPage })
+
+    meGetUsageMock.mockResolvedValueOnce({
+      records: Array.from({ length: 20 }, (_, index) => buildUsageRecord({ id: `usage-${index + 1}` })),
+      pagination: { total: 5000, limit: 20, offset: 0, has_more: true },
+    })
+
+    await loadRecords({ page: 1, pageSize: 20 }, undefined, { preset: 'today', tz_offset_minutes: 0 })
+
+    expect(currentRecords.value).toHaveLength(20)
+    expect(totalRecords.value).toBe(5000)
+  })
+
   it('keeps locally resolved failure fields when a stale active record refreshes', async () => {
     const isAdminPage = ref(true)
     const { loadRecords, currentRecords } = useUsageData({ isAdminPage })
