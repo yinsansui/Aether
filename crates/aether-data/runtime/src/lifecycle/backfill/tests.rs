@@ -39,7 +39,9 @@ fn pending_backfills_from_applied_returns_all_versions_when_none_applied() {
             20260505120000,
             20260517012000,
             20260716010000,
-            20260722140744
+            20260722140744,
+            20260929000100,
+            20260929120000
         ]
     );
 }
@@ -61,7 +63,9 @@ fn pending_backfills_from_applied_skips_versions_already_applied() {
             20260505120000,
             20260517012000,
             20260716010000,
-            20260722140744
+            20260722140744,
+            20260929000100,
+            20260929120000
         ]
     );
 }

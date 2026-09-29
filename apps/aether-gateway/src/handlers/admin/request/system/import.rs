@@ -2105,6 +2105,8 @@ fn build_imported_user_usage_total_aggregates(
             cache_creation_tokens: 0,
             cache_read_tokens: 0,
             total_cost: 0.0,
+            // These rows are synthesized from user counters, so the billed amount is unknown.
+            actual_total_cost: None,
         });
     }
     Ok(rows)
@@ -2225,6 +2227,9 @@ fn validate_imported_usage_aggregate_storage(
             ]
         );
         validate_imported_decimal_storage(row.total_cost, &format!("{prefix}.total_cost"))?;
+        if let Some(value) = row.actual_total_cost {
+            validate_imported_decimal_storage(value, &format!("{prefix}.actual_total_cost"))?;
+        }
     }
     for (index, row) in snapshot.stats_daily_api_key.iter().enumerate() {
         let prefix = format!("usage_aggregates.stats_daily_api_key[{index}]");
@@ -2246,6 +2251,9 @@ fn validate_imported_usage_aggregate_storage(
             ]
         );
         validate_imported_decimal_storage(row.total_cost, &format!("{prefix}.total_cost"))?;
+        if let Some(value) = row.actual_total_cost {
+            validate_imported_decimal_storage(value, &format!("{prefix}.actual_total_cost"))?;
+        }
     }
     Ok(())
 }

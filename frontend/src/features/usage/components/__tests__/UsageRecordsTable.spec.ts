@@ -142,7 +142,6 @@ function mountUsageRecordsTable(records: UsageRecord[], overrides: Record<string
   const app = createApp(UsageRecordsTable, {
     records,
     isAdmin: true,
-    showActualCost: false,
     loading: false,
     timeRange: { preset: 'today', tz_offset_minutes: 0 },
     filterSearch: '',

@@ -59,13 +59,7 @@
             </TableCell>
             <TableCell class="text-right py-2 px-2">
               <div class="flex flex-col items-end text-xs gap-0.5">
-                <span class="text-primary font-medium">{{ formatCurrency(model.total_cost) }}</span>
-                <span
-                  v-if="isAdmin && model.actual_cost !== undefined"
-                  class="text-muted-foreground text-[10px]"
-                >
-                  {{ formatCurrency(model.actual_cost) }}
-                </span>
+                <span class="text-primary font-medium">{{ formatCurrency(primaryCost(model)) }}</span>
               </div>
             </TableCell>
             <TableCell class="text-right py-2 px-2">
@@ -90,10 +84,17 @@ import TableRow from '@/components/ui/table-row.vue'
 import TableHead from '@/components/ui/table-head.vue'
 import TableCell from '@/components/ui/table-cell.vue'
 import { formatTokens, formatCurrency, formatHitRate } from '@/utils/format'
+import { resolveCostDisplay } from '../utils/costDisplay'
 import type { EnhancedModelStatsItem } from '../types'
 
 defineProps<{
   data: EnhancedModelStatsItem[]
   isAdmin: boolean
 }>()
+
+// Charged amount is the only cost shown; it is what the wallet actually debits.
+function primaryCost(item: { total_cost: number; actual_cost?: number }): number {
+  return resolveCostDisplay(item.total_cost, item.actual_cost).primary
+}
+
 </script>

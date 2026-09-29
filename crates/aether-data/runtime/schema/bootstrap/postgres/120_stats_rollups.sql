@@ -322,3 +322,20 @@ ALTER TABLE public.stats_hourly_user
     ADD COLUMN IF NOT EXISTS settled_cache_read_tokens bigint DEFAULT 0 NOT NULL,
     ADD COLUMN IF NOT EXISTS settled_first_finalized_at_unix_secs bigint,
     ADD COLUMN IF NOT EXISTS settled_last_finalized_at_unix_secs bigint;
+
+-- Billed (post API-key multiplier) cost mirrors. `total_cost` stays the
+-- standard catalog price so callers can still compare the two.
+ALTER TABLE public.stats_daily_model
+    ADD COLUMN IF NOT EXISTS actual_total_cost numeric(20,8) DEFAULT '0'::double precision NOT NULL;
+
+ALTER TABLE public.stats_daily_provider
+    ADD COLUMN IF NOT EXISTS actual_total_cost numeric(20,8) DEFAULT '0'::double precision NOT NULL;
+
+ALTER TABLE public.stats_daily_api_key
+    ADD COLUMN IF NOT EXISTS actual_total_cost numeric(20,8) DEFAULT '0'::double precision NOT NULL;
+
+ALTER TABLE public.stats_daily_model_provider
+    ADD COLUMN IF NOT EXISTS actual_total_cost numeric(20,8) DEFAULT '0'::double precision NOT NULL;
+
+ALTER TABLE public.stats_user_daily_model_provider
+    ADD COLUMN IF NOT EXISTS actual_total_cost numeric(20,8) DEFAULT '0'::double precision NOT NULL;

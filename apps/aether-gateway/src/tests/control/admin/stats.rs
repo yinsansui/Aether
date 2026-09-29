@@ -478,7 +478,7 @@ async fn gateway_handles_admin_stats_cost_forecast_locally_with_trusted_admin_pr
             100,
             20,
             0.1,
-            0.1,
+            0.04,
             DAY_1_UNIX_SECS,
         ),
         sample_usage_row(
@@ -492,7 +492,7 @@ async fn gateway_handles_admin_stats_cost_forecast_locally_with_trusted_admin_pr
             120,
             40,
             0.2,
-            0.2,
+            0.05,
             DAY_2_UNIX_SECS,
         ),
     ]));
@@ -523,12 +523,18 @@ async fn gateway_handles_admin_stats_cost_forecast_locally_with_trusted_admin_pr
     );
     assert_eq!(payload["history"][0]["date"], "2024-03-21");
     assert_eq!(payload["history"][0]["total_cost"], 0.1);
+    assert_eq!(payload["history"][0]["actual_total_cost"], 0.04);
     assert_eq!(payload["history"][1]["date"], "2024-03-22");
     assert_eq!(payload["history"][1]["total_cost"], 0.2);
+    assert_eq!(payload["history"][1]["actual_total_cost"], 0.05);
     assert_eq!(
         payload["forecast"].as_array().map(|items| items.len()),
         Some(2)
     );
+    // The forecast tracks the billed amount while `total_cost` keeps the
+    // standard-price projection for reference.
+    assert_eq!(payload["forecast"][0]["actual_total_cost"], 0.06);
+    assert_eq!(payload["forecast"][0]["total_cost"], 0.3);
     assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
 
     gateway_handle.abort();
@@ -1087,7 +1093,7 @@ async fn gateway_handles_admin_stats_time_series_locally_with_trusted_admin_prin
         100,
         20,
         0.1,
-        0.1,
+        0.04,
         DAY_1_UNIX_SECS,
     );
     first_day.cache_creation_input_tokens = 5;
@@ -1104,7 +1110,7 @@ async fn gateway_handles_admin_stats_time_series_locally_with_trusted_admin_prin
         60,
         40,
         0.2,
-        0.2,
+        0.05,
         DAY_2_UNIX_SECS,
     );
     second_day.cache_creation_input_tokens = 2;
@@ -1140,8 +1146,11 @@ async fn gateway_handles_admin_stats_time_series_locally_with_trusted_admin_prin
     assert_eq!(payload[0]["input_tokens"], 100);
     assert_eq!(payload[0]["cache_creation_tokens"], 5);
     assert_eq!(payload[0]["cache_read_tokens"], 7);
+    assert_eq!(payload[0]["total_cost"], 0.1);
+    assert_eq!(payload[0]["actual_total_cost"], 0.04);
     assert_eq!(payload[1]["date"], "2024-03-22");
     assert_eq!(payload[1]["total_cost"], 0.2);
+    assert_eq!(payload[1]["actual_total_cost"], 0.05);
     assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
 
     gateway_handle.abort();
@@ -1412,6 +1421,78 @@ async fn gateway_handles_admin_stats_leaderboard_models_locally_with_trusted_adm
 }
 
 #[tokio::test]
+async fn gateway_ranks_admin_stats_leaderboard_by_billed_cost_instead_of_standard_price() {
+    let (_upstream_url, upstream_hits, upstream_handle) =
+        start_stats_upstream("/api/admin/stats/leaderboard/models").await;
+
+    // `gpt-5` has the higher standard price but the lower billed amount, so the
+    // two orderings disagree and the billed one must win.
+    let usage_repository = Arc::new(InMemoryUsageReadRepository::seed(vec![
+        sample_usage_row(
+            "usage-billed-low",
+            "req-billed-low",
+            Some("user-1"),
+            Some("key-1"),
+            Some("primary"),
+            "OpenAI",
+            "gpt-5",
+            100,
+            50,
+            0.5,
+            0.05,
+            DAY_1_UNIX_SECS,
+        ),
+        sample_usage_row(
+            "usage-billed-high",
+            "req-billed-high",
+            Some("user-1"),
+            Some("key-1"),
+            Some("primary"),
+            "Anthropic",
+            "claude-3-5-sonnet",
+            70,
+            30,
+            0.2,
+            0.4,
+            DAY_1_UNIX_SECS + 5,
+        ),
+    ]));
+
+    let gateway = build_router_with_state(
+        AppState::new()
+            .expect("gateway should build")
+            .with_data_state_for_tests(GatewayDataState::with_usage_reader_for_tests(
+                usage_repository,
+            )),
+    );
+    let (gateway_url, gateway_handle) = start_server(gateway).await;
+
+    let response = admin_request(
+        reqwest::Client::new().get(format!(
+            "{gateway_url}/api/admin/stats/leaderboard/models?start_date=2024-03-21&end_date=2024-03-21&metric=cost&order=desc&tz_offset_minutes=0"
+        )),
+    )
+    .send()
+    .await
+    .expect("request should succeed");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: serde_json::Value = response.json().await.expect("json body should parse");
+    assert_eq!(payload["total"], 2);
+    assert_eq!(payload["items"][0]["id"], "claude-3-5-sonnet");
+    assert_eq!(payload["items"][0]["cost"], 0.4);
+    assert_eq!(payload["items"][0]["standard_cost"], 0.2);
+    assert_eq!(payload["items"][0]["value"], 0.4);
+    assert_eq!(payload["items"][1]["id"], "gpt-5");
+    assert_eq!(payload["items"][1]["cost"], 0.05);
+    assert_eq!(payload["items"][1]["standard_cost"], 0.5);
+    assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
+
+    gateway_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn gateway_handles_admin_stats_leaderboard_models_locally_without_usage_reader() {
     let (upstream_url, upstream_hits, upstream_handle) =
         start_stats_upstream("/api/admin/stats/leaderboard/models").await;
@@ -1521,7 +1602,7 @@ async fn gateway_handles_admin_stats_leaderboard_api_keys_locally_with_trusted_a
             80,
             20,
             0.3,
-            0.3,
+            0.12,
             DAY_1_UNIX_SECS,
         ),
         sample_usage_row(
@@ -1574,8 +1655,9 @@ async fn gateway_handles_admin_stats_leaderboard_api_keys_locally_with_trusted_a
     assert_eq!(payload["total"], 1);
     assert_eq!(payload["items"][0]["id"], "key-1");
     assert_eq!(payload["items"][0]["name"], "primary-key");
-    assert_eq!(payload["items"][0]["cost"], 0.3);
-    assert_eq!(payload["items"][0]["value"], 0.3);
+    assert_eq!(payload["items"][0]["cost"], 0.12);
+    assert_eq!(payload["items"][0]["standard_cost"], 0.3);
+    assert_eq!(payload["items"][0]["value"], 0.12);
     assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
 
     gateway_handle.abort();
@@ -1755,7 +1837,7 @@ async fn gateway_handles_admin_stats_leaderboard_users_locally_with_trusted_admi
             60,
             20,
             0.4,
-            0.4,
+            0.16,
             DAY_1_UNIX_SECS,
         ),
         sample_usage_row(
@@ -1801,8 +1883,9 @@ async fn gateway_handles_admin_stats_leaderboard_users_locally_with_trusted_admi
     assert_eq!(payload["total"], 1);
     assert_eq!(payload["items"][0]["id"], "user-1");
     assert_eq!(payload["items"][0]["name"], "alice");
-    assert_eq!(payload["items"][0]["cost"], 0.4);
-    assert_eq!(payload["items"][0]["value"], 0.4);
+    assert_eq!(payload["items"][0]["cost"], 0.16);
+    assert_eq!(payload["items"][0]["standard_cost"], 0.4);
+    assert_eq!(payload["items"][0]["value"], 0.16);
     assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
 
     gateway_handle.abort();

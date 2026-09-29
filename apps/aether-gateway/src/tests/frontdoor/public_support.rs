@@ -5281,15 +5281,21 @@ async fn gateway_handles_wallet_today_cost_locally_without_proxying_upstream() {
         auth_now + chrono::Duration::hours(1),
     );
     let usage_repository = Arc::new(InMemoryUsageReadRepository::seed(vec![
-        sample_user_usage_audit(
-            "usage-wallet-today-1",
-            "req-wallet-today-1",
-            "user-auth-1",
-            "gpt-4.1",
-            "OpenAI",
-            "completed",
-            usage_now - chrono::Duration::minutes(30),
-        ),
+        // free tier：标准价 1.25、实际扣减 0，请求数必须保留、金额计 0。
+        {
+            let mut free_tier = sample_user_usage_audit(
+                "usage-wallet-today-1",
+                "req-wallet-today-1",
+                "user-auth-1",
+                "gpt-4.1",
+                "OpenAI",
+                "completed",
+                usage_now - chrono::Duration::minutes(30),
+            );
+            free_tier.total_cost_usd = 1.25;
+            free_tier.actual_total_cost_usd = 0.0;
+            free_tier
+        },
         sample_user_usage_audit(
             "usage-wallet-old-1",
             "req-wallet-old-1",
@@ -5330,7 +5336,8 @@ async fn gateway_handles_wallet_today_cost_locally_without_proxying_upstream() {
     assert_eq!(payload["total_requests"], 1);
     assert_eq!(payload["input_tokens"], 120);
     assert_eq!(payload["cache_read_tokens"], 15);
-    assert_eq!(payload["total_cost"], 1.25);
+    // 这一条是 free tier：请求照常计入，但实扣金额为 0。
+    assert_eq!(payload["total_cost"], 0.0);
     assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
 
     gateway_handle.abort();
@@ -5355,17 +5362,19 @@ async fn gateway_wallet_flow_today_entry_uses_live_settled_usage() {
         ]),
         auth_now + chrono::Duration::hours(1),
     );
-    let usage_repository = Arc::new(InMemoryUsageReadRepository::seed(vec![
-        sample_user_usage_audit(
-            "usage-wallet-flow-today",
-            "req-wallet-flow-today",
-            "user-auth-1",
-            "gpt-4.1",
-            "OpenAI",
-            "completed",
-            usage_now,
-        ),
-    ]));
+    // 标准价 1.25、实际扣减 0.25：钱包“今日消费”必须展示实际扣减金额。
+    let mut today_usage = sample_user_usage_audit(
+        "usage-wallet-flow-today",
+        "req-wallet-flow-today",
+        "user-auth-1",
+        "gpt-4.1",
+        "OpenAI",
+        "completed",
+        usage_now,
+    );
+    today_usage.total_cost_usd = 1.25;
+    today_usage.actual_total_cost_usd = 0.25;
+    let usage_repository = Arc::new(InMemoryUsageReadRepository::seed(vec![today_usage]));
     let (gateway_url, upstream_hits, gateway_handle, upstream_handle) =
         start_auth_gateway_with_usage_state(
             user,
@@ -5397,7 +5406,7 @@ async fn gateway_wallet_flow_today_entry_uses_live_settled_usage() {
     assert_eq!(payload["today_entry"]["total_requests"], 1);
     assert_eq!(payload["today_entry"]["input_tokens"], 120);
     assert_eq!(payload["today_entry"]["cache_read_tokens"], 15);
-    assert_eq!(payload["today_entry"]["total_cost"], 1.25);
+    assert_eq!(payload["today_entry"]["total_cost"], 0.25);
     assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
 
     gateway_handle.abort();
@@ -6290,7 +6299,9 @@ async fn gateway_handles_users_me_usage_locally_without_proxying_upstream() {
     );
     assert_eq!(payload["summary_by_model"][0]["effective_input_tokens"], 95);
     assert_eq!(payload["summary_by_model"][0]["total_input_context"], 120);
-    assert!(payload.get("summary_by_provider").is_none());
+    // The charged amount and provider breakdown are user-visible, not admin-only.
+    assert!(payload.get("total_actual_cost").is_some());
+    assert!(payload["summary_by_provider"].is_array());
     assert_eq!(payload["billing"]["id"], "wallet-auth-1");
     assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
 

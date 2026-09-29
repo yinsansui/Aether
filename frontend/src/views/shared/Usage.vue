@@ -81,7 +81,6 @@
     <UsageRecordsTable
       :records="displayRecords"
       :is-admin="isAdminPage"
-      :show-actual-cost="authStore.canAccessAdmin"
       :loading="isLoadingRecords"
       :time-range="timeRange"
       :filter-search="filterSearch"

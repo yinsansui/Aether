@@ -18,7 +18,7 @@ use aether_data_contracts::repository::usage::{
     UsageAuditAggregationQuery, UsageAuditKeywordSearchQuery, UsageAuditListQuery,
     UsageAuditSummaryQuery, UsageBodyCaptureState, UsageBodyField, UsageDashboardSummaryQuery,
     UsageLeaderboardGroupBy, UsageLeaderboardQuery, UsageProviderPerformanceQuery,
-    UsageTimeSeriesGranularity,
+    UsageSettledCostSummaryQuery, UsageTimeSeriesGranularity,
 };
 use serde_json::json;
 
@@ -2748,4 +2748,57 @@ async fn summarize_usage_provider_performance_computes_tps_and_top_provider_time
     assert_eq!(without_timeline.summary, summary.summary);
     assert_eq!(without_timeline.providers, summary.providers);
     assert!(without_timeline.timeline.is_empty());
+}
+
+#[tokio::test]
+async fn settled_cost_summary_reports_actual_debited_amount() {
+    let repository = InMemoryUsageReadRepository::default();
+
+    let mut metered = sample_upsert_usage_record("req-settled-metered");
+    metered.total_cost_usd = Some(0.5);
+    metered.actual_total_cost_usd = Some(0.05);
+    metered.status = "completed".to_string();
+    metered.billing_status = "settled".to_string();
+    metered.created_at_unix_ms = Some(1_700_000_000_000);
+    metered.finalized_at_unix_secs = Some(1_700_000_000);
+    metered.updated_at_unix_secs = 1_700_000_001;
+    repository
+        .upsert(metered)
+        .await
+        .expect("metered upsert should succeed");
+
+    // free tier：标准价大于 0，实际扣减为 0，必须仍然计入请求数。
+    let mut free_tier = sample_upsert_usage_record("req-settled-free-tier");
+    free_tier.total_cost_usd = Some(0.4);
+    free_tier.actual_total_cost_usd = Some(0.0);
+    free_tier.status = "completed".to_string();
+    free_tier.billing_status = "settled".to_string();
+    free_tier.created_at_unix_ms = Some(1_700_000_001_000);
+    free_tier.finalized_at_unix_secs = Some(1_700_000_001);
+    free_tier.updated_at_unix_secs = 1_700_000_002;
+    repository
+        .upsert(free_tier)
+        .await
+        .expect("free tier upsert should succeed");
+
+    let summary = repository
+        .summarize_usage_settled_cost(&UsageSettledCostSummaryQuery {
+            created_from_unix_secs: 1_699_000_000_000,
+            created_until_unix_secs: 1_700_000_100_000,
+            user_id: None,
+            api_key_id: None,
+            require_raw_source: true,
+        })
+        .await
+        .expect("settled cost summary should succeed");
+
+    assert_eq!(
+        summary.total_requests, 2,
+        "free tier rows keep counting as billable requests"
+    );
+    assert!((summary.total_cost_usd - 0.9).abs() < 1e-9);
+    assert!(
+        (summary.actual_total_cost_usd - 0.05).abs() < 1e-9,
+        "summary must expose the actually debited amount"
+    );
 }

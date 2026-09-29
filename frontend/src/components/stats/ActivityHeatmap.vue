@@ -14,8 +14,8 @@
         <p class="mt-0.5">
           {{ t('heatmap.requests', { count: tooltip.day.requests }) }} · {{ formatTokens(tooltip.day.total_tokens) }}
         </p>
-        <p class="text-[11px] text-muted-foreground">
-          {{ t('heatmap.cost', { value: formatCurrency(tooltip.day.total_cost) }) }}
+        <p class="text-[11px] text-primary">
+          {{ t('heatmap.actualCost', { value: formatCurrency(billedCost(tooltip.day)) }) }}
         </p>
       </div>
     </Teleport>
@@ -397,13 +397,21 @@ function getCellStyle(requests: number) {
   }
 }
 
+function billedCost(day: ActivityHeatmapDay): number {
+  // Free-tier days legitimately bill 0, so only a missing/non-finite value falls back.
+  return typeof day.actual_total_cost === 'number' && Number.isFinite(day.actual_total_cost)
+    ? day.actual_total_cost
+    : day.total_cost || 0
+}
+
 function buildTooltip(day: ActivityHeatmapDay): string {
   const dateLabel = formatDay(day.date)
-  const costLabel = formatCurrency(day.total_cost || 0)
-  const parts = [dateLabel, t('heatmap.requests', { count: day.requests }), `${formatTokens(day.total_tokens)} tokens`, costLabel]
-  if (day.actual_total_cost !== undefined) {
-    parts.push(t('heatmap.actualCost', { value: formatCurrency(day.actual_total_cost) }))
-  }
+  const parts = [
+    dateLabel,
+    t('heatmap.requests', { count: day.requests }),
+    `${formatTokens(day.total_tokens)} tokens`,
+    t('heatmap.actualCost', { value: formatCurrency(billedCost(day)) })
+  ]
   return parts.join(' · ')
 }
 

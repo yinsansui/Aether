@@ -121,7 +121,7 @@ export interface ModelSummary {
   total_input_context?: number
   cache_hit_rate?: number
   total_cost_usd: number
-  actual_total_cost_usd?: number  // 倍率消耗（仅管理员可见）
+  actual_total_cost_usd?: number  // 实际扣减金额（含 API Key 倍率）
 }
 
 // 提供商统计接口
@@ -136,6 +136,7 @@ export interface ProviderSummary {
   total_input_context?: number
   cache_hit_rate?: number
   total_cost_usd: number
+  actual_total_cost_usd?: number  // 实际扣减金额（含 API Key 倍率）
   success_rate: number | null
   avg_response_time_ms: number | null
 }
@@ -152,6 +153,7 @@ export interface ApiFormatSummary {
   total_input_context?: number
   cache_hit_rate: number
   total_cost_usd: number
+  actual_total_cost_usd?: number  // 实际扣减金额（含 API Key 倍率）
   avg_response_time_ms: number
 }
 
@@ -162,7 +164,7 @@ export interface UsageResponse {
   total_output_tokens: number
   total_tokens: number
   total_cost: number  // 官方费率
-  total_actual_cost?: number  // 倍率消耗（仅管理员可见）
+  total_actual_cost?: number  // 实际扣减金额（含 API Key 倍率）
   avg_response_time: number
   billing: BillingSummary
   summary_by_model: ModelSummary[]

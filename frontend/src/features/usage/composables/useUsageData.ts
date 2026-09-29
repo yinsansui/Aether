@@ -301,6 +301,7 @@ export function useUsageData(options: UseUsageDataOptions) {
           cacheCreationTokens: item.cache_creation_tokens || 0,
           cacheHitRate: item.cache_hit_rate || 0,
           totalCost: item.total_cost_usd || 0,
+          actualCost: item.actual_total_cost_usd,
           successRate: item.success_rate || 0,
           avgResponseTime: (item.avg_response_time_ms ?? 0) > 0
             ? `${((item.avg_response_time_ms ?? 0) / 1000).toFixed(2)}s`
@@ -335,6 +336,7 @@ export function useUsageData(options: UseUsageDataOptions) {
         cache_creation_tokens: item.cache_creation_tokens || 0,
         cache_hit_rate: item.cache_hit_rate || 0,
         total_cost: item.total_cost_usd || 0,
+        actual_cost: item.actual_total_cost_usd,
         avgResponseTime: (item.avg_response_time_ms ?? 0) > 0
           ? `${((item.avg_response_time_ms ?? 0) / 1000).toFixed(2)}s`
           : '-'

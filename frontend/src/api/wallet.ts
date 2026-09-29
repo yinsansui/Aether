@@ -77,6 +77,8 @@ export interface DailyUsageRecord {
   id?: string | null
   date: string | null
   timezone?: string | null
+  // 字段名沿用历史命名，但含义是从钱包实际扣减的金额（actual_total_cost_usd，已含 API Key 倍率），
+  // 不是标准模型价；标准价只在请求明细里以“标准价”单独展示。
   total_cost: number
   total_requests: number
   input_tokens: number

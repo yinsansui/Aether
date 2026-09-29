@@ -551,7 +551,6 @@ fn users_me_usage_client_family(item: &StoredRequestUsageAudit) -> Option<&str> 
 
 fn build_users_me_usage_record_payload(
     item: &StoredRequestUsageAudit,
-    include_actual_cost: bool,
     api_key_names: &BTreeMap<String, String>,
     auth_api_key_reader_available: bool,
 ) -> serde_json::Value {
@@ -633,10 +632,9 @@ fn build_users_me_usage_record_payload(
     if let Some(actual_service_tier) = item.provider_actual_service_tier() {
         payload["actual_service_tier"] = json!(actual_service_tier);
     }
-    if include_actual_cost {
-        payload["actual_cost"] = json!(round_to(item.actual_total_cost_usd, 6));
-        payload["rate_multiplier"] = json!(rate_multiplier);
-    }
+    // Actual charged amount is user-visible by design: it is what the wallet debits.
+    payload["actual_cost"] = json!(round_to(item.actual_total_cost_usd, 6));
+    payload["rate_multiplier"] = json!(rate_multiplier);
     payload
 }
 
@@ -850,7 +848,6 @@ fn users_me_usage_is_failed(item: &StoredRequestUsageAudit) -> bool {
 
 fn build_users_me_usage_summary_by_model(
     rows: &[StoredUsageBreakdownSummaryRow],
-    include_actual_cost: bool,
 ) -> Vec<serde_json::Value> {
     rows.iter()
         .map(|row| {
@@ -872,9 +869,7 @@ fn build_users_me_usage_summary_by_model(
                 ),
                 "total_cost_usd": round_to(row.total_cost_usd, 6),
             });
-            if include_actual_cost {
-                value["actual_total_cost_usd"] = json!(round_to(row.actual_total_cost_usd, 6));
-            }
+            value["actual_total_cost_usd"] = json!(round_to(row.actual_total_cost_usd, 6));
             value
         })
         .collect()
@@ -901,6 +896,7 @@ fn build_users_me_usage_summary_by_provider(
                     row.cache_read_tokens,
                 ),
                 "total_cost_usd": round_to(row.total_cost_usd, 6),
+                "actual_total_cost_usd": round_to(row.actual_total_cost_usd, 6),
                 "success_rate": if row.request_count == 0 {
                     100.0
                 } else {
@@ -937,6 +933,7 @@ fn build_users_me_usage_summary_by_api_format(
                     row.cache_read_tokens,
                 ),
                 "total_cost_usd": round_to(row.total_cost_usd, 6),
+                "actual_total_cost_usd": round_to(row.actual_total_cost_usd, 6),
                 "avg_response_time_ms": if row.overall_response_time_samples == 0 {
                     0.0
                 } else {
@@ -1068,7 +1065,6 @@ pub(super) async fn handle_users_me_usage_get(
         })
     });
 
-    let include_actual_cost = auth.user.role.eq_ignore_ascii_case("admin");
     let auth_api_key_reader_available = state.has_auth_api_key_data_reader();
     let mut usage_summary =
         aether_data_contracts::repository::usage::StoredUsageDashboardSummary::default();
@@ -1122,30 +1118,28 @@ pub(super) async fn handle_users_me_usage_get(
                 );
             }
         };
-        if include_actual_cost {
-            summary_by_provider = match state
-                .summarize_usage_breakdown(&UsageBreakdownSummaryQuery {
-                    created_from_unix_secs,
-                    created_until_unix_secs,
-                    user_id: Some(auth.user.id.clone()),
-                    provider_name: None,
-                    model: None,
-                    api_format: None,
-                    exclude_status_codes: Vec::new(),
-                    group_by: UsageBreakdownGroupBy::Provider,
-                })
-                .await
-            {
-                Ok(value) => value,
-                Err(err) => {
-                    return build_auth_error_response(
-                        http::StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("user usage provider breakdown lookup failed: {err:?}"),
-                        false,
-                    );
-                }
-            };
-        }
+        summary_by_provider = match state
+            .summarize_usage_breakdown(&UsageBreakdownSummaryQuery {
+                created_from_unix_secs,
+                created_until_unix_secs,
+                user_id: Some(auth.user.id.clone()),
+                provider_name: None,
+                model: None,
+                api_format: None,
+                exclude_status_codes: Vec::new(),
+                group_by: UsageBreakdownGroupBy::Provider,
+            })
+            .await
+        {
+            Ok(value) => value,
+            Err(err) => {
+                return build_auth_error_response(
+                    http::StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("user usage provider breakdown lookup failed: {err:?}"),
+                    false,
+                );
+            }
+        };
         summary_by_api_format = match state
             .summarize_usage_breakdown(&UsageBreakdownSummaryQuery {
                 created_from_unix_secs,
@@ -1336,7 +1330,6 @@ pub(super) async fn handle_users_me_usage_get(
         .map(|item| {
             build_users_me_usage_record_payload(
                 &item,
-                include_actual_cost,
                 &api_key_names,
                 auth_api_key_reader_available,
             )
@@ -1355,9 +1348,11 @@ pub(super) async fn handle_users_me_usage_get(
         "total_output_tokens": total_output_tokens,
         "total_tokens": total_tokens,
         "total_cost": total_cost,
+        "total_actual_cost": total_actual_cost,
         "avg_response_time": avg_response_time,
         "billing": build_auth_wallet_summary_payload(wallet.as_ref()),
-        "summary_by_model": build_users_me_usage_summary_by_model(&summary_by_model, include_actual_cost),
+        "summary_by_model": build_users_me_usage_summary_by_model(&summary_by_model),
+        "summary_by_provider": build_users_me_usage_summary_by_provider(&summary_by_provider),
         "summary_by_api_format": build_users_me_usage_summary_by_api_format(&summary_by_api_format),
         "pagination": {
             "total": total_record_count,
@@ -1367,12 +1362,6 @@ pub(super) async fn handle_users_me_usage_get(
         },
         "records": records,
     });
-    if include_actual_cost {
-        payload["total_actual_cost"] = json!(total_actual_cost);
-        payload["summary_by_provider"] = json!(build_users_me_usage_summary_by_provider(
-            &summary_by_provider
-        ));
-    }
     Json(payload).into_response()
 }
 
@@ -1604,7 +1593,6 @@ pub(super) async fn handle_users_me_usage_heatmap_get(
         }
     };
 
-    let include_actual_cost = auth.user.role.eq_ignore_ascii_case("admin");
     let grouped: std::collections::HashMap<String, _> =
         summaries.into_iter().map(|s| (s.date.clone(), s)).collect();
 
@@ -1634,10 +1622,8 @@ pub(super) async fn handle_users_me_usage_heatmap_get(
             "requests": requests,
             "total_tokens": total_tokens,
             "total_cost": round_to(total_cost, 6),
+            "actual_total_cost": round_to(actual_total_cost, 6),
         });
-        if include_actual_cost {
-            day["actual_total_cost"] = json!(round_to(actual_total_cost, 6));
-        }
         days.push(day);
         cursor = cursor
             .checked_add_signed(chrono::Duration::days(1))
@@ -1838,7 +1824,7 @@ mod tests {
             ..sample_usage("completed")
         };
 
-        let payload = build_users_me_usage_record_payload(&item, false, &BTreeMap::new(), false);
+        let payload = build_users_me_usage_record_payload(&item, &BTreeMap::new(), false);
 
         assert_eq!(payload["cache_creation_input_tokens"], 20);
         assert_eq!(payload["cache_creation_ephemeral_5m_input_tokens"], 9);
@@ -1873,7 +1859,7 @@ mod tests {
             ..sample_usage("completed")
         };
 
-        let record = build_users_me_usage_record_payload(&item, false, &BTreeMap::new(), false);
+        let record = build_users_me_usage_record_payload(&item, &BTreeMap::new(), false);
         let active = build_users_me_usage_active_payload(&item);
 
         for payload in [&record, &active] {
@@ -1896,7 +1882,7 @@ mod tests {
             ..sample_usage("completed")
         };
 
-        let record = build_users_me_usage_record_payload(&item, false, &BTreeMap::new(), false);
+        let record = build_users_me_usage_record_payload(&item, &BTreeMap::new(), false);
         let active = build_users_me_usage_active_payload(&item);
 
         assert_eq!(record["requested_reasoning_effort"], "xhigh");
@@ -1921,7 +1907,7 @@ mod tests {
             ..sample_usage("completed")
         };
 
-        let record = build_users_me_usage_record_payload(&item, false, &BTreeMap::new(), false);
+        let record = build_users_me_usage_record_payload(&item, &BTreeMap::new(), false);
         let active = build_users_me_usage_active_payload(&item);
 
         assert_eq!(record["is_websocket"], true);
@@ -1999,7 +1985,7 @@ mod tests {
             ..sample_usage("completed")
         };
 
-        let payload = build_users_me_usage_record_payload(&item, false, &BTreeMap::new(), false);
+        let payload = build_users_me_usage_record_payload(&item, &BTreeMap::new(), false);
 
         assert_eq!(payload["input_tokens"], 4941);
         assert_eq!(payload["effective_input_tokens"], 4941);
@@ -2030,7 +2016,7 @@ mod tests {
             ..sample_usage("failed")
         };
 
-        let record = build_users_me_usage_record_payload(&item, false, &BTreeMap::new(), false);
+        let record = build_users_me_usage_record_payload(&item, &BTreeMap::new(), false);
         let active = build_users_me_usage_active_payload(&item);
         assert_eq!(record["error_message"], "authentication_error");
         assert_eq!(active["error_message"], "authentication_error");
@@ -2050,8 +2036,7 @@ mod tests {
 
         assert!(!users_me_usage_client_is_stream(&item));
 
-        let record_payload =
-            build_users_me_usage_record_payload(&item, false, &BTreeMap::new(), false);
+        let record_payload = build_users_me_usage_record_payload(&item, &BTreeMap::new(), false);
         assert_eq!(record_payload["is_stream"], true);
         assert_eq!(record_payload["upstream_is_stream"], true);
         assert_eq!(record_payload["client_requested_stream"], false);
@@ -2074,8 +2059,7 @@ mod tests {
             ..sample_usage("completed")
         };
 
-        let record_payload =
-            build_users_me_usage_record_payload(&item, false, &BTreeMap::new(), false);
+        let record_payload = build_users_me_usage_record_payload(&item, &BTreeMap::new(), false);
         let active_payload = build_users_me_usage_active_payload(&item);
 
         assert_eq!(record_payload["client_family"], "codex_vscode");
@@ -2093,8 +2077,7 @@ mod tests {
             ..sample_usage("completed")
         };
 
-        let record_payload =
-            build_users_me_usage_record_payload(&item, false, &BTreeMap::new(), false);
+        let record_payload = build_users_me_usage_record_payload(&item, &BTreeMap::new(), false);
 
         assert_eq!(record_payload["client_family"], "openai_js_sdk");
     }
@@ -2112,8 +2095,7 @@ mod tests {
 
         assert!(!users_me_usage_client_is_stream(&item));
 
-        let record_payload =
-            build_users_me_usage_record_payload(&item, false, &BTreeMap::new(), false);
+        let record_payload = build_users_me_usage_record_payload(&item, &BTreeMap::new(), false);
         assert_eq!(record_payload["is_stream"], true);
         assert_eq!(record_payload["upstream_is_stream"], true);
         assert_eq!(record_payload["client_requested_stream"], false);
@@ -2135,8 +2117,7 @@ mod tests {
 
         assert!(!users_me_usage_client_is_stream(&item));
 
-        let record_payload =
-            build_users_me_usage_record_payload(&item, false, &BTreeMap::new(), false);
+        let record_payload = build_users_me_usage_record_payload(&item, &BTreeMap::new(), false);
         assert_eq!(record_payload["is_stream"], true);
         assert_eq!(record_payload["upstream_is_stream"], true);
         assert_eq!(record_payload["client_requested_stream"], false);
@@ -2164,8 +2145,7 @@ mod tests {
 
         assert!(!users_me_usage_client_is_stream(&item));
 
-        let record_payload =
-            build_users_me_usage_record_payload(&item, false, &BTreeMap::new(), false);
+        let record_payload = build_users_me_usage_record_payload(&item, &BTreeMap::new(), false);
         assert_eq!(record_payload["client_requested_stream"], false);
         assert_eq!(record_payload["client_is_stream"], false);
     }
@@ -2181,8 +2161,7 @@ mod tests {
             ..sample_usage("completed")
         };
 
-        let record_payload =
-            build_users_me_usage_record_payload(&item, false, &BTreeMap::new(), false);
+        let record_payload = build_users_me_usage_record_payload(&item, &BTreeMap::new(), false);
         assert_eq!(record_payload["is_stream"], false);
         assert_eq!(record_payload["upstream_is_stream"], true);
         assert_eq!(record_payload["client_requested_stream"], false);
@@ -2223,8 +2202,7 @@ mod tests {
         assert!(!users_me_usage_client_is_stream(&item));
         assert!(users_me_usage_upstream_is_stream(&item));
 
-        let record_payload =
-            build_users_me_usage_record_payload(&item, false, &BTreeMap::new(), false);
+        let record_payload = build_users_me_usage_record_payload(&item, &BTreeMap::new(), false);
         assert_eq!(record_payload["is_stream"], true);
         assert_eq!(record_payload["upstream_is_stream"], true);
         assert_eq!(record_payload["client_requested_stream"], false);
@@ -2257,8 +2235,7 @@ mod tests {
         assert!(!users_me_usage_client_is_stream(&item));
         assert!(users_me_usage_upstream_is_stream(&item));
 
-        let record_payload =
-            build_users_me_usage_record_payload(&item, false, &BTreeMap::new(), false);
+        let record_payload = build_users_me_usage_record_payload(&item, &BTreeMap::new(), false);
         assert_eq!(record_payload["is_stream"], true);
         assert_eq!(record_payload["upstream_is_stream"], true);
         assert_eq!(record_payload["client_requested_stream"], false);

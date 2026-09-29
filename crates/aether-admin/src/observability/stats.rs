@@ -62,6 +62,8 @@ pub struct AdminStatsAggregate {
 pub struct AdminStatsForecastPoint {
     pub date: chrono::NaiveDate,
     pub total_cost: f64,
+    /// Billed amount (catalog price after the API key rate multiplier).
+    pub actual_total_cost: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,7 +91,10 @@ pub struct AdminStatsLeaderboardItem {
     pub name: String,
     pub requests: u64,
     pub tokens: u64,
+    /// Billed amount; this is what the `cost` metric ranks and displays.
     pub cost: f64,
+    /// Standard catalog price, kept for reference.
+    pub standard_cost: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -108,6 +113,7 @@ pub struct AdminStatsTimeSeriesBucket {
     pub cache_creation_tokens: u64,
     pub cache_read_tokens: u64,
     pub total_cost: f64,
+    pub actual_total_cost: f64,
     pub total_response_time_ms: f64,
 }
 
@@ -368,6 +374,7 @@ impl AdminStatsTimeSeriesBucket {
             .cache_read_tokens
             .saturating_add(item.cache_read_input_tokens);
         self.total_cost += item.total_cost_usd;
+        self.actual_total_cost += item.actual_total_cost_usd;
         self.total_response_time_ms += item.response_time_ms.unwrap_or(0) as f64;
     }
 
@@ -382,6 +389,7 @@ impl AdminStatsTimeSeriesBucket {
             .cache_read_tokens
             .saturating_add(other.cache_read_tokens);
         self.total_cost += other.total_cost;
+        self.actual_total_cost += other.actual_total_cost;
         self.total_response_time_ms += other.total_response_time_ms;
     }
 
@@ -402,6 +410,7 @@ impl AdminStatsTimeSeriesBucket {
             "cache_creation_tokens": self.cache_creation_tokens,
             "cache_read_tokens": self.cache_read_tokens,
             "total_cost": round_to(self.total_cost, 6),
+            "actual_total_cost": round_to(self.actual_total_cost, 6),
             "avg_response_time_ms": round_to(self.avg_response_time_ms(), 2),
         })
     }
@@ -415,6 +424,7 @@ impl AdminStatsTimeSeriesBucket {
             "cache_creation_tokens": self.cache_creation_tokens,
             "cache_read_tokens": self.cache_read_tokens,
             "total_cost": round_to(self.total_cost, 6),
+            "actual_total_cost": round_to(self.actual_total_cost, 6),
         })
     }
 }
@@ -827,6 +837,7 @@ pub fn build_admin_stats_leaderboard_response(
                 "requests": item.requests,
                 "tokens": item.tokens,
                 "cost": round_to(item.cost, 6),
+                "standard_cost": round_to(item.standard_cost, 6),
             })
         })
         .collect();
@@ -1190,6 +1201,7 @@ fn admin_stats_time_series_bucket_from_summary(
         cache_creation_tokens: bucket.cache_creation_tokens,
         cache_read_tokens: bucket.cache_read_tokens,
         total_cost: bucket.total_cost_usd,
+        actual_total_cost: bucket.actual_total_cost_usd,
         total_response_time_ms: bucket.total_response_time_ms,
     }
 }
@@ -1356,10 +1368,13 @@ pub fn build_admin_stats_cost_forecast_response(
         .map(|(date, bucket)| AdminStatsForecastPoint {
             date,
             total_cost: bucket.total_cost,
+            actual_total_cost: bucket.actual_total_cost,
         })
         .collect();
-    let values: Vec<f64> = history.iter().map(|item| item.total_cost).collect();
+    let values: Vec<f64> = history.iter().map(|item| item.actual_total_cost).collect();
+    let standard_values: Vec<f64> = history.iter().map(|item| item.total_cost).collect();
     let (slope, intercept) = linear_regression(&values);
+    let (standard_slope, standard_intercept) = linear_regression(&standard_values);
     let last_date = history
         .last()
         .map(|item| item.date)
@@ -1368,12 +1383,14 @@ pub fn build_admin_stats_cost_forecast_response(
         .map(|index| {
             let idx = values.len() + index as usize;
             let predicted = (slope * idx as f64 + intercept).max(0.0);
+            let predicted_standard = (standard_slope * idx as f64 + standard_intercept).max(0.0);
             json!({
                 "date": last_date
                     .checked_add_signed(chrono::Duration::days(i64::from(index + 1)))
                     .unwrap_or(last_date)
                     .to_string(),
-                "total_cost": round_to(predicted, 4),
+                "total_cost": round_to(predicted_standard, 4),
+                "actual_total_cost": round_to(predicted, 4),
             })
         })
         .collect();
@@ -1382,6 +1399,7 @@ pub fn build_admin_stats_cost_forecast_response(
         "history": history.into_iter().map(|item| json!({
             "date": item.date.to_string(),
             "total_cost": round_to(item.total_cost, 6),
+            "actual_total_cost": round_to(item.actual_total_cost, 6),
         })).collect::<Vec<_>>(),
         "forecast": forecast,
         "slope": round_to(slope, 6),
@@ -1403,10 +1421,13 @@ pub fn build_admin_stats_cost_forecast_response_from_summaries(
             .map(|(date, bucket)| AdminStatsForecastPoint {
                 date,
                 total_cost: bucket.total_cost,
+                actual_total_cost: bucket.actual_total_cost,
             })
             .collect();
-    let values: Vec<f64> = history.iter().map(|item| item.total_cost).collect();
+    let values: Vec<f64> = history.iter().map(|item| item.actual_total_cost).collect();
+    let standard_values: Vec<f64> = history.iter().map(|item| item.total_cost).collect();
     let (slope, intercept) = linear_regression(&values);
+    let (standard_slope, standard_intercept) = linear_regression(&standard_values);
     let last_date = history
         .last()
         .map(|item| item.date)
@@ -1415,12 +1436,14 @@ pub fn build_admin_stats_cost_forecast_response_from_summaries(
         .map(|index| {
             let idx = values.len() + index as usize;
             let predicted = (slope * idx as f64 + intercept).max(0.0);
+            let predicted_standard = (standard_slope * idx as f64 + standard_intercept).max(0.0);
             json!({
                 "date": last_date
                     .checked_add_signed(chrono::Duration::days(i64::from(index + 1)))
                     .unwrap_or(last_date)
                     .to_string(),
-                "total_cost": round_to(predicted, 4),
+                "total_cost": round_to(predicted_standard, 4),
+                "actual_total_cost": round_to(predicted, 4),
             })
         })
         .collect();
@@ -1429,6 +1452,7 @@ pub fn build_admin_stats_cost_forecast_response_from_summaries(
         "history": history.into_iter().map(|item| json!({
             "date": item.date.to_string(),
             "total_cost": round_to(item.total_cost, 6),
+            "actual_total_cost": round_to(item.actual_total_cost, 6),
         })).collect::<Vec<_>>(),
         "forecast": forecast,
         "slope": round_to(slope, 6),
@@ -1720,6 +1744,7 @@ pub fn build_model_leaderboard_items(
                     requests: 0,
                     tokens: 0,
                     cost: 0.0,
+                    standard_cost: 0.0,
                 });
         entry.requests = entry.requests.saturating_add(1);
         entry.tokens = entry.tokens.saturating_add(
@@ -1728,7 +1753,8 @@ pub fn build_model_leaderboard_items(
                 .saturating_add(item.cache_creation_input_tokens)
                 .saturating_add(item.cache_read_input_tokens),
         );
-        entry.cost += item.total_cost_usd;
+        entry.cost += item.actual_total_cost_usd;
+        entry.standard_cost += item.total_cost_usd;
     }
     grouped.into_values().collect()
 }
@@ -1743,7 +1769,8 @@ pub fn build_model_leaderboard_items_from_summaries(
             name: item.group_key.clone(),
             requests: item.request_count,
             tokens: item.total_tokens,
-            cost: item.total_cost_usd,
+            cost: item.actual_total_cost_usd,
+            standard_cost: item.total_cost_usd,
         })
         .collect()
 }
@@ -1803,10 +1830,12 @@ pub fn build_user_leaderboard_items(
                     requests: 0,
                     tokens: 0,
                     cost: 0.0,
+                    standard_cost: 0.0,
                 });
         entry.requests = entry.requests.saturating_add(1);
         entry.tokens = entry.tokens.saturating_add(admin_usage_total_tokens(item));
-        entry.cost += item.total_cost_usd;
+        entry.cost += item.actual_total_cost_usd;
+        entry.standard_cost += item.total_cost_usd;
     }
 
     grouped.into_values().collect()
@@ -1856,7 +1885,8 @@ pub fn build_user_leaderboard_items_from_summaries(
             name: entry_name,
             requests: item.request_count,
             tokens: item.total_tokens,
-            cost: item.total_cost_usd,
+            cost: item.actual_total_cost_usd,
+            standard_cost: item.total_cost_usd,
         });
     }
 
@@ -1923,6 +1953,7 @@ pub fn build_api_key_leaderboard_items(
                     requests: 0,
                     tokens: 0,
                     cost: 0.0,
+                    standard_cost: 0.0,
                 });
         entry.requests = entry.requests.saturating_add(1);
         entry.tokens = entry.tokens.saturating_add(
@@ -1931,7 +1962,8 @@ pub fn build_api_key_leaderboard_items(
                 .saturating_add(item.cache_creation_input_tokens)
                 .saturating_add(item.cache_read_input_tokens),
         );
-        entry.cost += item.total_cost_usd;
+        entry.cost += item.actual_total_cost_usd;
+        entry.standard_cost += item.total_cost_usd;
     }
 
     grouped.into_values().collect()
@@ -1987,7 +2019,8 @@ pub fn build_api_key_leaderboard_items_from_summaries(
             name: entry_name,
             requests: item.request_count,
             tokens: item.total_tokens,
-            cost: item.total_cost_usd,
+            cost: item.actual_total_cost_usd,
+            standard_cost: item.total_cost_usd,
         });
     }
 
@@ -2141,6 +2174,7 @@ mod tests {
             request_count: 3,
             total_tokens: 60,
             total_cost_usd: 0.6,
+            actual_total_cost_usd: 0.24,
         }
     }
 

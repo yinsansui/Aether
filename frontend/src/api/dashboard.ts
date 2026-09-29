@@ -93,6 +93,7 @@ export interface DashboardStatsResponse {
   token_breakdown?: TokenBreakdown
   // 普通用户专用字段
   monthly_cost?: number
+  monthly_actual_cost?: number
 }
 
 export interface RecentRequestsResponse {
@@ -378,6 +379,7 @@ export interface ModelBreakdown {
   requests: number
   tokens: number
   cost: number
+  actual_cost?: number
 }
 
 export interface ModelSummary {
@@ -385,6 +387,7 @@ export interface ModelSummary {
   requests: number
   tokens: number
   cost: number
+  actual_cost?: number
   avg_response_time: number
   cost_per_request: number
   tokens_per_request: number
@@ -395,6 +398,7 @@ export interface ProviderSummary {
   requests: number
   tokens: number
   cost: number
+  actual_cost?: number
 }
 
 export interface DailyStat {
@@ -402,6 +406,7 @@ export interface DailyStat {
   requests: number
   tokens: number
   cost: number
+  actual_cost?: number
   avg_response_time: number // in seconds
   unique_models: number
   unique_providers?: number // 仅管理员返回

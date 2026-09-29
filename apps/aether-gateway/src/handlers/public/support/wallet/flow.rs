@@ -155,6 +155,7 @@ pub(super) async fn handle_wallet_flow(
     merged.extend(daily_page.items.iter().map(|entry| {
         json!({
             "type": "daily_usage",
+            // wallet_daily_usage_ledgers.total_cost_usd 存的是实际扣减金额（见 wallet/postgres.rs）。
             "data": build_wallet_daily_usage_payload(
                 entry.id.clone(),
                 entry.billing_date.clone(),

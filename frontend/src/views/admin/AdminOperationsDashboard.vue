@@ -1327,6 +1327,15 @@ function sumSeries(field: string): number {
   return timeSeries.value.reduce((total, item) => total + numeric(item[field]), 0)
 }
 
+function billedSeriesValue(item: Record<string, unknown>): number {
+  // `actual_total_cost` is the billed amount; only legacy rows without the field
+  // fall back to the standard price. A billed amount of 0 is a valid value.
+  if (item.actual_total_cost === undefined || item.actual_total_cost === null) {
+    return numeric(item.total_cost)
+  }
+  return numeric(item.actual_total_cost)
+}
+
 function seriesTokenTotal(item: Record<string, unknown>): number {
   return numeric(item.input_tokens)
     + numeric(item.output_tokens)
@@ -1520,7 +1529,9 @@ const totalTokens = computed(() => timeSeries.value.reduce(
   (total, item) => total + seriesTokenTotal(item),
   0,
 ))
-const totalCost = computed(() => sumSeries('total_cost'))
+const totalCost = computed(() => (
+  timeSeries.value.reduce((total, item) => total + billedSeriesValue(item), 0)
+))
 const classifiedErrorCount = computed(() => (
   errorDistributionLoaded.value
     ? errorDistribution.value.reduce((total, item) => total + numeric(item.count), 0)

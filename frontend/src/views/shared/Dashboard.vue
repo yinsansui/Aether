@@ -221,7 +221,7 @@
                 <p
                   class="mt-1.5 sm:mt-2 text-lg sm:text-xl font-semibold text-foreground"
                 >
-                  {{ formatCurrency(costStats.total_cost) }}
+                  {{ formatCurrency(costStats.total_actual_cost) }}
                 </p>
                 <Badge
                   v-if="costStats.cost_savings > 0"
@@ -662,7 +662,7 @@
                 variant="success"
                 class="text-[10px]"
               >
-                ${{ stat.cost.toFixed(4) }}
+                ${{ statCost(stat).toFixed(4) }}
               </Badge>
             </div>
             <div class="grid grid-cols-2 gap-2 text-xs">
@@ -761,7 +761,7 @@
                   variant="success"
                   class="text-[10px]"
                 >
-                  ${{ stat.cost.toFixed(4) }}
+                  ${{ statCost(stat).toFixed(4) }}
                 </Badge>
               </TableCell>
               <TableCell class="text-center">
@@ -1132,6 +1132,12 @@ const tokenBreakdown = ref<{
 
 const activeUsers = ref(0);
 const dailyStats = ref<DailyStat[]>([]);
+
+// Charged amount after the API key rate multiplier; falls back to the standard
+// price for historical rows that predate the actual-cost rollups.
+function statCost(stat: DailyStat): number {
+  return stat.actual_cost ?? stat.cost;
+}
 const providerSummary = ref<ProviderSummary[]>([]);
 const dailyTimeRange = ref<DateRangeParams>(
   getDateRangeFromPeriod("last7days"),
@@ -1189,7 +1195,7 @@ const totalStats = computed(() => {
     (acc, stat) => {
       acc.requests += stat.requests;
       acc.tokens += stat.tokens;
-      acc.cost += stat.cost;
+      acc.cost += stat.actual_cost ?? stat.cost;
       acc.totalResponseTime += stat.avg_response_time * stat.requests;
       return acc;
     },
@@ -1234,7 +1240,7 @@ const dailyModelCostChartData = computed<ChartData<"bar">>(() => {
     day.model_breakdown?.forEach((mb) => {
       modelTotalCost.set(
         mb.model,
-        (modelTotalCost.get(mb.model) || 0) + mb.cost,
+        (modelTotalCost.get(mb.model) || 0) + (mb.actual_cost ?? mb.cost),
       );
     });
   });
@@ -1248,7 +1254,7 @@ const dailyModelCostChartData = computed<ChartData<"bar">>(() => {
       label: model.replace("claude-", "").replace("gpt-", ""),
       data: dailyStats.value.map((day) => {
         const found = day.model_breakdown?.find((mb) => mb.model === model);
-        return found ? found.cost : 0;
+        return found ? (found.actual_cost ?? found.cost) : 0;
       }),
       backgroundColor: MODEL_COLORS[index % MODEL_COLORS.length],
       borderRadius: 2,
@@ -1334,7 +1340,7 @@ const providerCostChartData = computed<ChartData<"doughnut">>(() => {
     labels: providerSummary.value.map((p) => p.provider),
     datasets: [
       {
-        data: providerSummary.value.map((p) => p.cost),
+        data: providerSummary.value.map((p) => p.actual_cost ?? p.cost),
         backgroundColor: providerSummary.value.map(
           (_, i) => PROVIDER_COLORS[i % PROVIDER_COLORS.length],
         ),
@@ -1531,7 +1537,8 @@ async function loadDashboardData() {
       if (statsData.token_breakdown)
         tokenBreakdown.value = statsData.token_breakdown;
       if (statsData.monthly_cost !== undefined)
-        userMonthlyCost.value = statsData.monthly_cost;
+        userMonthlyCost.value =
+          statsData.monthly_actual_cost ?? statsData.monthly_cost;
     }
   } finally {
     loading.value = false;

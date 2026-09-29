@@ -229,6 +229,7 @@ CREATE TABLE IF NOT EXISTS public.stats_daily_model (
     cache_creation_tokens bigint DEFAULT 0 NOT NULL,
     cache_read_tokens bigint DEFAULT 0 NOT NULL,
     total_cost double precision DEFAULT 0 NOT NULL,
+    actual_total_cost double precision DEFAULT 0 NOT NULL,
     avg_response_time_ms double precision DEFAULT 0 NOT NULL,
     created_at bigint NOT NULL,
     updated_at bigint NOT NULL,
@@ -251,6 +252,7 @@ CREATE TABLE IF NOT EXISTS public.stats_daily_provider (
     cache_creation_tokens bigint DEFAULT 0 NOT NULL,
     cache_read_tokens bigint DEFAULT 0 NOT NULL,
     total_cost double precision DEFAULT 0 NOT NULL,
+    actual_total_cost double precision DEFAULT 0 NOT NULL,
     created_at bigint NOT NULL,
     updated_at bigint NOT NULL
 );
@@ -270,6 +272,7 @@ CREATE TABLE IF NOT EXISTS public.stats_daily_api_key (
     cache_creation_tokens bigint DEFAULT 0 NOT NULL,
     cache_read_tokens bigint DEFAULT 0 NOT NULL,
     total_cost double precision DEFAULT 0 NOT NULL,
+    actual_total_cost double precision DEFAULT 0 NOT NULL,
     api_key_name character varying(255),
     created_at bigint NOT NULL,
     updated_at bigint NOT NULL
@@ -458,6 +461,7 @@ CREATE TABLE IF NOT EXISTS public.stats_daily_model_provider (
     total_requests bigint DEFAULT 0 NOT NULL,
     total_tokens bigint DEFAULT 0 NOT NULL,
     total_cost double precision DEFAULT 0 NOT NULL,
+    actual_total_cost double precision DEFAULT 0 NOT NULL,
     response_time_sum_ms double precision DEFAULT 0 NOT NULL,
     response_time_samples bigint DEFAULT 0 NOT NULL,
     created_at bigint NOT NULL,
@@ -478,6 +482,7 @@ CREATE TABLE IF NOT EXISTS public.stats_user_daily_model_provider (
     total_requests bigint DEFAULT 0 NOT NULL,
     total_tokens bigint DEFAULT 0 NOT NULL,
     total_cost double precision DEFAULT 0 NOT NULL,
+    actual_total_cost double precision DEFAULT 0 NOT NULL,
     response_time_sum_ms double precision DEFAULT 0 NOT NULL,
     response_time_samples bigint DEFAULT 0 NOT NULL,
     created_at bigint NOT NULL,

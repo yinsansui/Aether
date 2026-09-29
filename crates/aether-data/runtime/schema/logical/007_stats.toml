@@ -641,6 +641,11 @@ type = "float64"
 default = 0
 
 [[table.stats_daily_model.columns]]
+name = "actual_total_cost"
+type = "float64"
+default = 0
+
+[[table.stats_daily_model.columns]]
 name = "avg_response_time_ms"
 type = "float64"
 default = 0
@@ -703,6 +708,11 @@ default = 0
 
 [[table.stats_daily_provider.columns]]
 name = "total_cost"
+type = "float64"
+default = 0
+
+[[table.stats_daily_provider.columns]]
+name = "actual_total_cost"
 type = "float64"
 default = 0
 
@@ -774,6 +784,11 @@ default = 0
 
 [[table.stats_daily_api_key.columns]]
 name = "total_cost"
+type = "float64"
+default = 0
+
+[[table.stats_daily_api_key.columns]]
+name = "actual_total_cost"
 type = "float64"
 default = 0
 
@@ -1877,6 +1892,11 @@ type = "float64"
 default = 0
 
 [[table.stats_daily_model_provider.columns]]
+name = "actual_total_cost"
+type = "float64"
+default = 0
+
+[[table.stats_daily_model_provider.columns]]
 name = "response_time_sum_ms"
 type = "float64"
 default = 0
@@ -1949,6 +1969,11 @@ default = 0
 
 [[table.stats_user_daily_model_provider.columns]]
 name = "total_cost"
+type = "float64"
+default = 0
+
+[[table.stats_user_daily_model_provider.columns]]
+name = "actual_total_cost"
 type = "float64"
 default = 0
 

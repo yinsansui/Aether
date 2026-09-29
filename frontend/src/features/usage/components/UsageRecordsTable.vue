@@ -315,7 +315,7 @@
             <span
               v-if="record.usage_available !== false && record.usage_pricing_available !== false"
               class="text-sm text-primary font-semibold leading-5"
-            >{{ formatCurrency(record.cost || 0) }}</span>
+            >{{ formatCurrency(primaryCost(record)) }}</span>
             <span
               v-else-if="record.usage_available === false"
               data-usage-unavailable="cost"
@@ -328,10 +328,6 @@
               class="text-sm text-muted-foreground font-medium leading-5"
               title="token 用量可验证，但当前计价规则不支持该音频用量分项"
             >未计价</span>
-            <span
-              v-if="record.usage_available !== false && record.usage_pricing_available !== false && showActualCost && record.actual_cost !== undefined && record.rate_multiplier && record.rate_multiplier !== 1.0"
-              class="text-[10px] text-muted-foreground"
-            >{{ formatCurrency(record.actual_cost) }}</span>
           </div>
         </div>
 
@@ -962,13 +958,7 @@
               v-if="record.usage_available !== false && record.usage_pricing_available !== false"
               class="flex flex-col items-end text-xs gap-0.5"
             >
-              <span class="text-primary font-medium">{{ formatCurrency(record.cost || 0) }}</span>
-              <span
-                v-if="showActualCost && record.actual_cost !== undefined && record.rate_multiplier && record.rate_multiplier !== 1.0"
-                class="text-muted-foreground"
-              >
-                {{ formatCurrency(record.actual_cost) }}
-              </span>
+              <span class="text-primary font-medium">{{ formatCurrency(primaryCost(record)) }}</span>
             </div>
             <div
               v-else-if="record.usage_available === false"
@@ -1112,6 +1102,7 @@ import {
 } from '../utils/status'
 import { useRowClick } from '@/composables/useRowClick'
 import { useDarkMode } from '@/composables/useDarkMode'
+import { resolveCostDisplay } from '../utils/costDisplay'
 import { API_FORMAT_ORDER, formatApiFormat } from '@/api/endpoints/types/api-format'
 import { formatClientFamily } from '@/features/usage/utils/clientFamily'
 import { formatServiceTierFact } from '../utils/service-tier'
@@ -1161,7 +1152,6 @@ interface UsageRecordColumnOption {
 const props = defineProps<{
   records: UsageRecord[]
   isAdmin: boolean
-  showActualCost: boolean
   loading: boolean
   // 时间范围
   timeRange: DateRangeParams
@@ -1204,6 +1194,11 @@ const emit = defineEmits<{
   'showDetail': [id: string]
   'prefetchDetail': [id: string]
 }>()
+
+// 金额列统一展示钱包实际扣减金额；旧记录没有 actual_cost 时才回退标准价。
+function primaryCost(record: UsageRecord): number {
+  return resolveCostDisplay(record.cost, record.actual_cost).primary
+}
 
 const USAGE_RECORD_COLUMN_OPTIONS: UsageRecordColumnOption[] = [
   { id: 'time', label: '时间' },

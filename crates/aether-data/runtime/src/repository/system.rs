@@ -58,6 +58,13 @@ pub struct AdminSystemStatsUserDailyAggregate {
     pub cache_creation_tokens: u64,
     pub cache_read_tokens: u64,
     pub total_cost: f64,
+    /// Billed amount for the day (what the user was actually charged).
+    ///
+    /// Snapshots written before `actual_total_cost` existed in this payload omit the field,
+    /// which deserializes to `None`. Import treats `None` as "unknown" and keeps whatever the
+    /// target database already has instead of overwriting it with 0.
+    #[serde(default)]
+    pub actual_total_cost: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -73,6 +80,11 @@ pub struct AdminSystemStatsDailyApiKeyAggregate {
     pub cache_creation_tokens: u64,
     pub cache_read_tokens: u64,
     pub total_cost: f64,
+    /// Billed amount for the day (what the user was actually charged).
+    ///
+    /// See `AdminSystemStatsUserDailyAggregate::actual_total_cost` for the `None` semantics.
+    #[serde(default)]
+    pub actual_total_cost: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -129,5 +141,102 @@ impl AdminSystemPurgeSummary {
 
     pub fn total(&self) -> u64 {
         self.affected.values().copied().sum()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn legacy_stats_user_daily() -> serde_json::Value {
+        serde_json::json!({
+            "user_id": "user-1",
+            "username": "legacy",
+            "date_unix_secs": 86400,
+            "total_requests": 3,
+            "success_requests": 3,
+            "error_requests": 0,
+            "input_tokens": 120,
+            "output_tokens": 30,
+            "cache_creation_tokens": 0,
+            "cache_read_tokens": 0,
+            "total_cost": 1.25,
+        })
+    }
+
+    fn legacy_stats_daily_api_key() -> serde_json::Value {
+        serde_json::json!({
+            "api_key_id": "key-1",
+            "api_key_name": "legacy",
+            "date_unix_secs": 86400,
+            "total_requests": 3,
+            "success_requests": 3,
+            "error_requests": 0,
+            "input_tokens": 120,
+            "output_tokens": 30,
+            "cache_creation_tokens": 0,
+            "cache_read_tokens": 0,
+            "total_cost": 1.25,
+        })
+    }
+
+    #[test]
+    fn usage_aggregate_snapshot_loads_payloads_written_before_actual_total_cost() {
+        let snapshot: AdminSystemUsageAggregateSnapshot =
+            serde_json::from_value(serde_json::json!({
+                "stats_user_daily": [legacy_stats_user_daily()],
+                "stats_daily_api_key": [legacy_stats_daily_api_key()],
+            }))
+            .expect(
+                "snapshots written before actual_total_cost was exported must still deserialize",
+            );
+
+        assert_eq!(snapshot.stats_user_daily[0].actual_total_cost, None);
+        assert_eq!(snapshot.stats_daily_api_key[0].actual_total_cost, None);
+    }
+
+    #[test]
+    fn usage_aggregate_snapshot_round_trips_actual_total_cost() {
+        let mut snapshot = AdminSystemUsageAggregateSnapshot::default();
+        snapshot
+            .stats_user_daily
+            .push(AdminSystemStatsUserDailyAggregate {
+                user_id: "user-1".to_string(),
+                username: Some("current".to_string()),
+                date_unix_secs: 86400,
+                total_requests: 3,
+                success_requests: 3,
+                error_requests: 0,
+                input_tokens: 120,
+                output_tokens: 30,
+                cache_creation_tokens: 0,
+                cache_read_tokens: 0,
+                total_cost: 1.25,
+                actual_total_cost: Some(0.5),
+            });
+        snapshot
+            .stats_daily_api_key
+            .push(AdminSystemStatsDailyApiKeyAggregate {
+                api_key_id: "key-1".to_string(),
+                api_key_name: Some("current".to_string()),
+                date_unix_secs: 86400,
+                total_requests: 3,
+                success_requests: 3,
+                error_requests: 0,
+                input_tokens: 120,
+                output_tokens: 30,
+                cache_creation_tokens: 0,
+                cache_read_tokens: 0,
+                total_cost: 1.25,
+                actual_total_cost: Some(0.5),
+            });
+
+        let encoded = serde_json::to_value(&snapshot).expect("snapshot should serialize");
+        let decoded: AdminSystemUsageAggregateSnapshot = serde_json::from_value(encoded)
+            .expect("snapshot with actual_total_cost should round-trip");
+
+        assert_eq!(decoded, snapshot);
+        assert_eq!(decoded.stats_user_daily[0].actual_total_cost, Some(0.5));
+        assert_eq!(decoded.stats_daily_api_key[0].actual_total_cost, Some(0.5));
     }
 }

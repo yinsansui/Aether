@@ -182,10 +182,10 @@
                         <span class="text-muted-foreground">总费用</span>
                         <span
                           class="ml-1 font-bold"
-                          :class="detailPricingAvailable ? 'text-green-600 dark:text-green-400' : 'text-muted-foreground'"
+                          :class="detailPricingAvailable ? 'text-primary' : 'text-muted-foreground'"
                           data-request-detail-total-cost
                         >
-                          {{ detailPricingAvailable ? `$${detailTotalCostForDisplay.toFixed(6)}` : (detailUsageAvailable ? '未计价' : '不可用') }}
+                          {{ detailPricingAvailable ? `$${detailChargedCostForDisplay.toFixed(6)}` : (detailUsageAvailable ? '未计价' : '不可用') }}
                         </span>
                       </span>
                       <span class="text-muted-foreground">|</span>
@@ -208,10 +208,10 @@
                         <span class="text-muted-foreground">总费用</span>
                         <span
                           class="ml-1 font-bold"
-                          :class="detailPricingAvailable ? 'text-green-600 dark:text-green-400' : 'text-muted-foreground'"
+                          :class="detailPricingAvailable ? 'text-primary' : 'text-muted-foreground'"
                           data-request-detail-total-cost
                         >
-                          {{ detailPricingAvailable ? `$${detailTotalCostForDisplay.toFixed(6)}` : (detailUsageAvailable ? '未计价' : '不可用') }}
+                          {{ detailPricingAvailable ? `$${detailChargedCostForDisplay.toFixed(6)}` : (detailUsageAvailable ? '未计价' : '不可用') }}
                         </span>
                       </span>
                       <span class="text-muted-foreground">|</span>
@@ -1037,9 +1037,15 @@ const detailUsageAvailable = computed(() => detail.value?.usage_available !== fa
 const detailPricingAvailable = computed(() => (
   detailUsageAvailable.value && detail.value?.usage_pricing_available !== false
 ))
-const detailTotalCostForDisplay = computed(() => (
-  detail.value ? (detailTotalCost(detail.value) ?? 0) : 0
-))
+// Charged amount is what the wallet actually debited after the API key rate
+// multiplier. This is the only cost shown in the request detail.
+const detailChargedCostForDisplay = computed(() => {
+  const current = detail.value
+  if (!current) return 0
+  const actual = toNumber(current.actual_cost)
+  if (actual != null) return actual
+  return toNumber(current.total_cost) ?? 0
+})
 const timelineRef = ref<InstanceType<typeof HorizontalRequestTimeline> | null>(null)
 const timelineLoaded = ref(false)
 const timelineHasTrace = ref(false)

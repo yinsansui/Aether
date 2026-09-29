@@ -406,6 +406,9 @@ fn decode_dashboard_daily_breakdown_row(
             .map_postgres_err()?
             .max(0) as u64,
         total_cost_usd: row.try_get::<f64, _>("total_cost_usd").map_postgres_err()?,
+        actual_total_cost_usd: row
+            .try_get::<f64, _>("actual_total_cost_usd")
+            .map_postgres_err()?,
         response_time_sum_ms: row
             .try_get::<f64, _>("response_time_sum_ms")
             .map_postgres_err()?,
@@ -818,6 +821,7 @@ fn absorb_usage_settled_cost_summary(
     row: StoredUsageSettledCostSummary,
 ) {
     target.total_cost_usd += row.total_cost_usd;
+    target.actual_total_cost_usd += row.actual_total_cost_usd;
     target.total_requests = target.total_requests.saturating_add(row.total_requests);
     target.input_tokens = target.input_tokens.saturating_add(row.input_tokens);
     target.output_tokens = target.output_tokens.saturating_add(row.output_tokens);
@@ -850,6 +854,9 @@ fn decode_usage_settled_cost_row(
 ) -> Result<StoredUsageSettledCostSummary, DataLayerError> {
     Ok(StoredUsageSettledCostSummary {
         total_cost_usd: row.try_get::<f64, _>("total_cost_usd").map_postgres_err()?,
+        actual_total_cost_usd: row
+            .try_get::<f64, _>("actual_total_cost_usd")
+            .map_postgres_err()?,
         total_requests: row
             .try_get::<i64, _>("total_requests")
             .map_postgres_err()?
@@ -1274,6 +1281,9 @@ fn decode_usage_time_series_bucket_row(
             .map_postgres_err()?
             .max(0) as u64,
         total_cost_usd: row.try_get::<f64, _>("total_cost_usd").map_postgres_err()?,
+        actual_total_cost_usd: row
+            .try_get::<f64, _>("actual_total_cost_usd")
+            .map_postgres_err()?,
         total_response_time_ms: row
             .try_get::<f64, _>("total_response_time_ms")
             .map_postgres_err()?,
@@ -1301,6 +1311,7 @@ fn absorb_usage_time_series_buckets(
             .cache_read_tokens
             .saturating_add(bucket.cache_read_tokens);
         entry.total_cost_usd += bucket.total_cost_usd;
+        entry.actual_total_cost_usd += bucket.actual_total_cost_usd;
         entry.total_response_time_ms += bucket.total_response_time_ms;
     }
 }
@@ -1328,6 +1339,9 @@ fn decode_usage_leaderboard_row(
             .map_postgres_err()?
             .max(0) as u64,
         total_cost_usd: row.try_get::<f64, _>("total_cost_usd").map_postgres_err()?,
+        actual_total_cost_usd: row
+            .try_get::<f64, _>("actual_total_cost_usd")
+            .map_postgres_err()?,
     })
 }
 
@@ -1349,6 +1363,7 @@ fn absorb_usage_leaderboard_rows(
         entry.request_count = entry.request_count.saturating_add(row.request_count);
         entry.total_tokens = entry.total_tokens.saturating_add(row.total_tokens);
         entry.total_cost_usd += row.total_cost_usd;
+        entry.actual_total_cost_usd += row.actual_total_cost_usd;
     }
 }
 
@@ -2497,6 +2512,7 @@ SELECT
   COALESCE(SUM(total_requests), 0)::BIGINT AS requests,
   COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0)::BIGINT AS total_tokens,
   COALESCE(SUM(total_cost), 0)::DOUBLE PRECISION AS total_cost_usd,
+  COALESCE(SUM(actual_total_cost), 0)::DOUBLE PRECISION AS actual_total_cost_usd,
   0::DOUBLE PRECISION AS response_time_sum_ms,
   0::BIGINT AS response_time_samples
 FROM stats_user_daily
@@ -2516,6 +2532,7 @@ SELECT
   COALESCE(SUM(total_requests), 0)::BIGINT AS requests,
   COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0)::BIGINT AS total_tokens,
   COALESCE(SUM(total_cost), 0)::DOUBLE PRECISION AS total_cost_usd,
+  COALESCE(SUM(actual_total_cost), 0)::DOUBLE PRECISION AS actual_total_cost_usd,
   0::DOUBLE PRECISION AS response_time_sum_ms,
   0::BIGINT AS response_time_samples
 FROM stats_daily
@@ -4098,6 +4115,8 @@ WHERE hour_utc >= $1
 SELECT
   COALESCE(SUM(COALESCE(CAST("usage".total_cost_usd AS DOUBLE PRECISION), 0)), 0)
     AS total_cost_usd,
+  COALESCE(SUM(COALESCE(CAST("usage".actual_total_cost_usd AS DOUBLE PRECISION), 0)), 0)
+    AS actual_total_cost_usd,
   COUNT(*)::BIGINT AS total_requests,
   COALESCE(SUM(GREATEST(COALESCE("usage".input_tokens, 0), 0)), 0)::BIGINT AS input_tokens,
   COALESCE(SUM(GREATEST(COALESCE("usage".output_tokens, 0), 0)), 0)::BIGINT AS output_tokens,
@@ -4164,6 +4183,8 @@ FROM usage_billing_facts AS "usage"
                 r#"
 SELECT
   CAST(COALESCE(SUM(settled_total_cost), 0) AS DOUBLE PRECISION) AS total_cost_usd,
+  -- 统计聚合表目前没有“已结算实际扣减金额”列，结算口径的 actual 只能走 require_raw_source 的原始表路径。
+  CAST(0 AS DOUBLE PRECISION) AS actual_total_cost_usd,
   COALESCE(SUM(settled_total_requests), 0)::BIGINT AS total_requests,
   COALESCE(SUM(settled_input_tokens), 0)::BIGINT AS input_tokens,
   COALESCE(SUM(settled_output_tokens), 0)::BIGINT AS output_tokens,
@@ -4188,6 +4209,8 @@ WHERE date >= $1
                 r#"
 SELECT
   CAST(COALESCE(SUM(settled_total_cost), 0) AS DOUBLE PRECISION) AS total_cost_usd,
+  -- 统计聚合表目前没有“已结算实际扣减金额”列，结算口径的 actual 只能走 require_raw_source 的原始表路径。
+  CAST(0 AS DOUBLE PRECISION) AS actual_total_cost_usd,
   COALESCE(SUM(settled_total_requests), 0)::BIGINT AS total_requests,
   COALESCE(SUM(settled_input_tokens), 0)::BIGINT AS input_tokens,
   COALESCE(SUM(settled_output_tokens), 0)::BIGINT AS output_tokens,
@@ -4220,6 +4243,8 @@ WHERE date >= $1
                 r#"
 SELECT
   CAST(COALESCE(SUM(settled_total_cost), 0) AS DOUBLE PRECISION) AS total_cost_usd,
+  -- 统计聚合表目前没有“已结算实际扣减金额”列，结算口径的 actual 只能走 require_raw_source 的原始表路径。
+  CAST(0 AS DOUBLE PRECISION) AS actual_total_cost_usd,
   COALESCE(SUM(settled_total_requests), 0)::BIGINT AS total_requests,
   COALESCE(SUM(settled_input_tokens), 0)::BIGINT AS input_tokens,
   COALESCE(SUM(settled_output_tokens), 0)::BIGINT AS output_tokens,
@@ -4244,6 +4269,8 @@ WHERE hour_utc >= $1
                 r#"
 SELECT
   CAST(COALESCE(SUM(settled_total_cost), 0) AS DOUBLE PRECISION) AS total_cost_usd,
+  -- 统计聚合表目前没有“已结算实际扣减金额”列，结算口径的 actual 只能走 require_raw_source 的原始表路径。
+  CAST(0 AS DOUBLE PRECISION) AS actual_total_cost_usd,
   COALESCE(SUM(settled_total_requests), 0)::BIGINT AS total_requests,
   COALESCE(SUM(settled_input_tokens), 0)::BIGINT AS input_tokens,
   COALESCE(SUM(settled_output_tokens), 0)::BIGINT AS output_tokens,
@@ -4282,6 +4309,7 @@ WHERE hour_utc >= $1
                     created_until_unix_secs: dashboard_utc_to_unix_secs(end_utc),
                     user_id: user_id.map(ToOwned::to_owned),
                     api_key_id: None,
+                    require_raw_source: false,
                 })
                 .await;
         };
@@ -4294,6 +4322,7 @@ WHERE hour_utc >= $1
                     created_until_unix_secs: dashboard_utc_to_unix_secs(end_utc),
                     user_id: user_id.map(ToOwned::to_owned),
                     api_key_id: None,
+                    require_raw_source: false,
                 })
                 .await;
         };
@@ -4307,6 +4336,7 @@ WHERE hour_utc >= $1
                     created_until_unix_secs: dashboard_utc_to_unix_secs(raw_end),
                     user_id: user_id.map(ToOwned::to_owned),
                     api_key_id: None,
+                    require_raw_source: false,
                 })
                 .await?,
             );
@@ -4330,6 +4360,7 @@ WHERE hour_utc >= $1
                     created_until_unix_secs: dashboard_utc_to_unix_secs(raw_end),
                     user_id: user_id.map(ToOwned::to_owned),
                     api_key_id: None,
+                    require_raw_source: false,
                 })
                 .await?,
             );
@@ -4344,7 +4375,8 @@ WHERE hour_utc >= $1
     ) -> Result<StoredUsageSettledCostSummary, DataLayerError> {
         let start_utc = dashboard_unix_secs_to_utc(query.created_from_unix_secs);
         let end_utc = dashboard_unix_secs_to_utc(query.created_until_unix_secs);
-        if query.api_key_id.is_some() {
+        // 统计聚合表没有“已结算实际扣减金额”，需要结算口径时只能回落到原始事实表。
+        if query.require_raw_source || query.api_key_id.is_some() {
             return self.summarize_usage_settled_cost_raw(query).await;
         }
         let user_id = query.user_id.as_deref();
@@ -4983,6 +5015,7 @@ SELECT
   COALESCE(SUM(total_requests), 0)::BIGINT AS requests,
   COALESCE(SUM(total_tokens), 0)::BIGINT AS total_tokens,
   COALESCE(SUM(total_cost), 0)::DOUBLE PRECISION AS total_cost_usd,
+  COALESCE(SUM(actual_total_cost), 0)::DOUBLE PRECISION AS actual_total_cost_usd,
   COALESCE(SUM(response_time_sum_ms), 0) AS response_time_sum_ms,
   COALESCE(SUM(response_time_samples), 0)::BIGINT AS response_time_samples
 FROM stats_user_daily_model_provider
@@ -5001,6 +5034,7 @@ SELECT
   COALESCE(SUM(total_requests), 0)::BIGINT AS requests,
   COALESCE(SUM(total_tokens), 0)::BIGINT AS total_tokens,
   COALESCE(SUM(total_cost), 0)::DOUBLE PRECISION AS total_cost_usd,
+  COALESCE(SUM(actual_total_cost), 0)::DOUBLE PRECISION AS actual_total_cost_usd,
   COALESCE(SUM(response_time_sum_ms), 0) AS response_time_sum_ms,
   COALESCE(SUM(response_time_samples), 0)::BIGINT AS response_time_samples
 FROM stats_daily_model_provider
@@ -5065,6 +5099,8 @@ SELECT
   COALESCE(SUM("usage".total_tokens), 0)::BIGINT AS total_tokens,
   COALESCE(SUM(COALESCE(CAST("usage".total_cost_usd AS DOUBLE PRECISION), 0)), 0)
     AS total_cost_usd,
+  COALESCE(SUM(COALESCE(CAST("usage".actual_total_cost_usd AS DOUBLE PRECISION), 0)), 0)
+    AS actual_total_cost_usd,
   COALESCE(SUM(
     CASE
       WHEN "usage".response_time_ms IS NOT NULL
@@ -6797,6 +6833,8 @@ WHERE user_id = $1
     AS cache_read_tokens,
   COALESCE(SUM(COALESCE(CAST("usage".total_cost_usd AS DOUBLE PRECISION), 0)), 0)
     AS total_cost_usd,
+  COALESCE(SUM(COALESCE(CAST("usage".actual_total_cost_usd AS DOUBLE PRECISION), 0)), 0)
+    AS actual_total_cost_usd,
   COALESCE(SUM(GREATEST(COALESCE("usage".response_time_ms, 0), 0)::DOUBLE PRECISION), 0)
     AS total_response_time_ms
 FROM usage_billing_facts AS "usage"
@@ -6877,6 +6915,7 @@ SELECT
   cache_creation_tokens::BIGINT AS cache_creation_tokens,
   cache_read_tokens::BIGINT AS cache_read_tokens,
   CAST(total_cost AS DOUBLE PRECISION) AS total_cost_usd,
+  CAST(actual_total_cost AS DOUBLE PRECISION) AS actual_total_cost_usd,
   CAST(response_time_sum_ms AS DOUBLE PRECISION) AS total_response_time_ms
 FROM stats_user_daily
 WHERE user_id = $1
@@ -6902,6 +6941,7 @@ SELECT
   cache_creation_tokens::BIGINT AS cache_creation_tokens,
   cache_read_tokens::BIGINT AS cache_read_tokens,
   CAST(total_cost AS DOUBLE PRECISION) AS total_cost_usd,
+  CAST(actual_total_cost AS DOUBLE PRECISION) AS actual_total_cost_usd,
   CAST(response_time_sum_ms AS DOUBLE PRECISION) AS total_response_time_ms
 FROM stats_daily
 WHERE date >= $1
@@ -6956,6 +6996,7 @@ ORDER BY date ASC
   COALESCE(SUM(cache_creation_tokens), 0)::BIGINT AS cache_creation_tokens,
   COALESCE(SUM(cache_read_tokens), 0)::BIGINT AS cache_read_tokens,
   COALESCE(SUM(CAST(total_cost AS DOUBLE PRECISION)), 0) AS total_cost_usd,
+  COALESCE(SUM(CAST(actual_total_cost AS DOUBLE PRECISION)), 0) AS actual_total_cost_usd,
   COALESCE(SUM(CAST(response_time_sum_ms AS DOUBLE PRECISION)), 0) AS total_response_time_ms
 FROM stats_hourly
 WHERE is_complete IS TRUE
@@ -7148,7 +7189,9 @@ SELECT
   COUNT(*)::BIGINT AS request_count,
   COALESCE(SUM(GREATEST(COALESCE("usage".total_tokens, 0), 0)), 0)::BIGINT AS total_tokens,
   COALESCE(SUM(COALESCE(CAST("usage".total_cost_usd AS DOUBLE PRECISION), 0)), 0)
-    AS total_cost_usd
+    AS total_cost_usd,
+  COALESCE(SUM(COALESCE(CAST("usage".actual_total_cost_usd AS DOUBLE PRECISION), 0)), 0)
+    AS actual_total_cost_usd
 FROM usage_billing_facts AS "usage"
 WHERE "usage".created_at >= TO_TIMESTAMP($1::double precision)
   AND "usage".created_at < TO_TIMESTAMP($2::double precision)
@@ -7196,8 +7239,9 @@ SELECT
   NULL::varchar AS legacy_name,
   COALESCE(SUM(total_requests), 0)::BIGINT AS request_count,
   COALESCE(SUM(total_tokens), 0)::BIGINT AS total_tokens,
-  CAST(COALESCE(SUM(total_cost), 0) AS DOUBLE PRECISION) AS total_cost_usd
-FROM stats_user_daily_model_provider
+  CAST(COALESCE(SUM(total_cost), 0) AS DOUBLE PRECISION) AS total_cost_usd,
+  CAST(COALESCE(SUM(actual_total_cost), 0) AS DOUBLE PRECISION) AS actual_total_cost_usd
+ FROM stats_user_daily_model_provider
 WHERE date >=
 "#,
                         );
@@ -7222,8 +7266,9 @@ SELECT
   NULL::varchar AS legacy_name,
   COALESCE(SUM(total_requests), 0)::BIGINT AS request_count,
   COALESCE(SUM(total_tokens), 0)::BIGINT AS total_tokens,
-  CAST(COALESCE(SUM(total_cost), 0) AS DOUBLE PRECISION) AS total_cost_usd
-FROM stats_user_daily_model
+  CAST(COALESCE(SUM(total_cost), 0) AS DOUBLE PRECISION) AS total_cost_usd,
+  CAST(COALESCE(SUM(actual_total_cost), 0) AS DOUBLE PRECISION) AS actual_total_cost_usd
+ FROM stats_user_daily_model
 WHERE date >=
 "#,
                         );
@@ -7247,8 +7292,9 @@ SELECT
   NULL::varchar AS legacy_name,
   COALESCE(SUM(total_requests), 0)::BIGINT AS request_count,
   COALESCE(SUM(total_tokens), 0)::BIGINT AS total_tokens,
-  CAST(COALESCE(SUM(total_cost), 0) AS DOUBLE PRECISION) AS total_cost_usd
-FROM stats_daily_model_provider
+  CAST(COALESCE(SUM(total_cost), 0) AS DOUBLE PRECISION) AS total_cost_usd,
+  CAST(COALESCE(SUM(actual_total_cost), 0) AS DOUBLE PRECISION) AS actual_total_cost_usd
+ FROM stats_daily_model_provider
 WHERE date >=
 "#,
                     );
@@ -7274,8 +7320,9 @@ SELECT
     SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens),
     0
   )::BIGINT AS total_tokens,
-  CAST(COALESCE(SUM(total_cost), 0) AS DOUBLE PRECISION) AS total_cost_usd
-FROM stats_daily_model
+  CAST(COALESCE(SUM(total_cost), 0) AS DOUBLE PRECISION) AS total_cost_usd,
+  CAST(COALESCE(SUM(actual_total_cost), 0) AS DOUBLE PRECISION) AS actual_total_cost_usd
+ FROM stats_daily_model
 WHERE date >=
 "#,
                     );
@@ -7303,8 +7350,9 @@ SELECT
   MAX(NULLIF(BTRIM(username), '')) AS legacy_name,
   COALESCE(SUM(total_requests), 0)::BIGINT AS request_count,
   COALESCE(SUM(total_tokens), 0)::BIGINT AS total_tokens,
-  CAST(COALESCE(SUM(total_cost), 0) AS DOUBLE PRECISION) AS total_cost_usd
-FROM stats_user_daily_provider
+  CAST(COALESCE(SUM(total_cost), 0) AS DOUBLE PRECISION) AS total_cost_usd,
+  CAST(COALESCE(SUM(actual_total_cost), 0) AS DOUBLE PRECISION) AS actual_total_cost_usd
+ FROM stats_user_daily_provider
 WHERE date >=
 "#,
                     );
@@ -7329,7 +7377,8 @@ SELECT
   MAX(NULLIF(BTRIM(username), '')) AS legacy_name,
   COALESCE(SUM(total_requests), 0)::BIGINT AS request_count,
   COALESCE(SUM(total_tokens), 0)::BIGINT AS total_tokens,
-  CAST(COALESCE(SUM(total_cost), 0) AS DOUBLE PRECISION) AS total_cost_usd
+  CAST(COALESCE(SUM(total_cost), 0) AS DOUBLE PRECISION) AS total_cost_usd,
+  CAST(COALESCE(SUM(actual_total_cost), 0) AS DOUBLE PRECISION) AS actual_total_cost_usd
 FROM stats_user_daily_model
 WHERE date >=
 "#,
@@ -7358,8 +7407,9 @@ SELECT
     SUM(effective_input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens),
     0
   )::BIGINT AS total_tokens,
-  CAST(COALESCE(SUM(total_cost), 0) AS DOUBLE PRECISION) AS total_cost_usd
-FROM stats_user_daily
+  CAST(COALESCE(SUM(total_cost), 0) AS DOUBLE PRECISION) AS total_cost_usd,
+  CAST(COALESCE(SUM(actual_total_cost), 0) AS DOUBLE PRECISION) AS actual_total_cost_usd
+ FROM stats_user_daily
 WHERE date >=
 "#,
                     );
@@ -7400,7 +7450,9 @@ SELECT
     ),
     0
   )::BIGINT AS total_tokens,
-  CAST(COALESCE(SUM(stats_daily_api_key.total_cost), 0) AS DOUBLE PRECISION) AS total_cost_usd
+  CAST(COALESCE(SUM(stats_daily_api_key.total_cost), 0) AS DOUBLE PRECISION) AS total_cost_usd,
+  CAST(COALESCE(SUM(stats_daily_api_key.actual_total_cost), 0) AS DOUBLE PRECISION)
+    AS actual_total_cost_usd
 FROM stats_daily_api_key
 LEFT JOIN api_keys ON api_keys.id = stats_daily_api_key.api_key_id
 WHERE stats_daily_api_key.date >=

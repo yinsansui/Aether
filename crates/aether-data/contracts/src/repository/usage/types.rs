@@ -1131,11 +1131,21 @@ pub struct UsageSettledCostSummaryQuery {
     pub created_until_unix_secs: u64,
     pub user_id: Option<String>,
     pub api_key_id: Option<String>,
+    /// 为 true 时跳过统计聚合表，直接从 `usage_billing_facts` 聚合。
+    ///
+    /// 聚合表只有 `settled_total_cost`（标准价），没有“已结算的实际扣减金额”列，
+    /// 所以结算口径的 `actual_total_cost_usd` 只能从原始事实表取得。
+    pub require_raw_source: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct StoredUsageSettledCostSummary {
     pub total_cost_usd: f64,
+    /// 用户实际被扣减的金额（已含 API Key 倍率）。
+    ///
+    /// 只有在 `UsageSettledCostSummaryQuery::require_raw_source` 为 true 时才由原始事实表算出；
+    /// 统计聚合表读取路径返回 0。
+    pub actual_total_cost_usd: f64,
     pub total_requests: u64,
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -1239,6 +1249,8 @@ pub struct StoredUsageDashboardDailyBreakdownRow {
     pub requests: u64,
     pub total_tokens: u64,
     pub total_cost_usd: f64,
+    /// Billed amount (catalog price after the API key rate multiplier).
+    pub actual_total_cost_usd: f64,
     pub response_time_sum_ms: f64,
     pub response_time_samples: u64,
 }
@@ -1468,6 +1480,8 @@ pub struct StoredUsageTimeSeriesBucket {
     pub cache_creation_tokens: u64,
     pub cache_read_tokens: u64,
     pub total_cost_usd: f64,
+    /// Billed amount (catalog price after the API key rate multiplier).
+    pub actual_total_cost_usd: f64,
     pub total_response_time_ms: f64,
 }
 
@@ -1496,6 +1510,8 @@ pub struct StoredUsageLeaderboardSummary {
     pub request_count: u64,
     pub total_tokens: u64,
     pub total_cost_usd: f64,
+    /// Billed amount (catalog price after the API key rate multiplier).
+    pub actual_total_cost_usd: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]

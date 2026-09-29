@@ -54,6 +54,7 @@ struct DashboardModelAggregate {
     requests: u64,
     tokens: u64,
     cost: f64,
+    actual_cost: f64,
     response_time_sum_ms: f64,
     response_time_samples: u64,
 }
@@ -63,6 +64,7 @@ struct DashboardProviderAggregate {
     requests: u64,
     tokens: u64,
     cost: f64,
+    actual_cost: f64,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -634,6 +636,7 @@ fn dashboard_apply_daily_breakdown_rows(
         model.requests = model.requests.saturating_add(row.requests);
         model.tokens = model.tokens.saturating_add(row.total_tokens);
         model.cost += row.total_cost_usd;
+        model.actual_cost += row.actual_total_cost_usd;
         model.response_time_sum_ms += row.response_time_sum_ms;
         model.response_time_samples = model
             .response_time_samples
@@ -643,6 +646,7 @@ fn dashboard_apply_daily_breakdown_rows(
         provider.requests = provider.requests.saturating_add(row.requests);
         provider.tokens = provider.tokens.saturating_add(row.total_tokens);
         provider.cost += row.total_cost_usd;
+        provider.actual_cost += row.actual_total_cost_usd;
     }
 }
 
@@ -666,14 +670,15 @@ fn dashboard_build_daily_stats_payload(
                         "requests": value.requests,
                         "tokens": value.tokens,
                         "cost": dashboard_round_f64(value.cost, 4),
+                        "actual_cost": dashboard_round_f64(value.actual_cost, 4),
                     })
                 })
                 .collect::<Vec<_>>();
             model_breakdown.sort_by(|left, right| {
-                right["cost"]
+                right["actual_cost"]
                     .as_f64()
                     .unwrap_or_default()
-                    .partial_cmp(&left["cost"].as_f64().unwrap_or_default())
+                    .partial_cmp(&left["actual_cost"].as_f64().unwrap_or_default())
                     .unwrap_or(std::cmp::Ordering::Equal)
                     .then_with(|| {
                         left["model"]
@@ -688,6 +693,7 @@ fn dashboard_build_daily_stats_payload(
                 "requests": aggregate.totals.requests,
                 "tokens": aggregate.totals.total_tokens,
                 "cost": dashboard_round_f64(aggregate.totals.total_cost_usd, 4),
+                "actual_cost": dashboard_round_f64(aggregate.totals.actual_total_cost_usd, 4),
                 "avg_response_time": aggregate.totals.avg_response_time_seconds(),
                 "unique_models": aggregate.models.len(),
                 "model_breakdown": model_breakdown,
@@ -702,6 +708,7 @@ fn dashboard_build_daily_stats_payload(
                 "requests": 0,
                 "tokens": 0,
                 "cost": 0.0,
+                "actual_cost": 0.0,
                 "avg_response_time": 0.0,
                 "unique_models": 0,
                 "model_breakdown": [],
@@ -731,7 +738,7 @@ fn dashboard_build_daily_stats_payload(
             let cost_per_request = if value.requests == 0 {
                 0.0
             } else {
-                dashboard_round_f64(value.cost / value.requests as f64, 4)
+                dashboard_round_f64(value.actual_cost / value.requests as f64, 4)
             };
             let tokens_per_request = if value.requests == 0 {
                 0.0
@@ -743,6 +750,7 @@ fn dashboard_build_daily_stats_payload(
                 "requests": value.requests,
                 "tokens": value.tokens,
                 "cost": dashboard_round_f64(value.cost, 4),
+                "actual_cost": dashboard_round_f64(value.actual_cost, 4),
                 "avg_response_time": avg_response_time,
                 "cost_per_request": cost_per_request,
                 "tokens_per_request": tokens_per_request,
@@ -750,10 +758,10 @@ fn dashboard_build_daily_stats_payload(
         })
         .collect::<Vec<_>>();
     model_summary_payload.sort_by(|left, right| {
-        right["cost"]
+        right["actual_cost"]
             .as_f64()
             .unwrap_or_default()
-            .partial_cmp(&left["cost"].as_f64().unwrap_or_default())
+            .partial_cmp(&left["actual_cost"].as_f64().unwrap_or_default())
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
@@ -766,14 +774,15 @@ fn dashboard_build_daily_stats_payload(
                     "requests": value.requests,
                     "tokens": value.tokens,
                     "cost": dashboard_round_f64(value.cost, 4),
+                    "actual_cost": dashboard_round_f64(value.actual_cost, 4),
                 })
             })
             .collect::<Vec<_>>();
         items.sort_by(|left, right| {
-            right["cost"]
+            right["actual_cost"]
                 .as_f64()
                 .unwrap_or_default()
-                .partial_cmp(&left["cost"].as_f64().unwrap_or_default())
+                .partial_cmp(&left["actual_cost"].as_f64().unwrap_or_default())
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         Some(items)
@@ -1213,6 +1222,7 @@ pub(super) async fn handle_dashboard_stats_get(
         "cache_stats": cache_stats,
         "token_breakdown": token_breakdown,
         "monthly_cost": dashboard_round_f64(period_totals.total_cost_usd, 4),
+        "monthly_actual_cost": dashboard_round_f64(period_totals.actual_total_cost_usd, 4),
     });
     dashboard_cached_json_response(state, cache_key, cache_ttl, &payload)
 }
@@ -1227,6 +1237,7 @@ fn dashboard_daily_aggregate_record(
         .total_tokens
         .saturating_add(row.total_tokens);
     aggregate.totals.total_cost_usd += row.total_cost_usd;
+    aggregate.totals.actual_total_cost_usd += row.actual_total_cost_usd;
     aggregate.totals.response_time_sum_ms += row.response_time_sum_ms;
     aggregate.totals.response_time_samples = aggregate
         .totals
@@ -1237,6 +1248,7 @@ fn dashboard_daily_aggregate_record(
     model.requests = model.requests.saturating_add(row.requests);
     model.tokens = model.tokens.saturating_add(row.total_tokens);
     model.cost += row.total_cost_usd;
+    model.actual_cost += row.actual_total_cost_usd;
     model.response_time_sum_ms += row.response_time_sum_ms;
     model.response_time_samples = model
         .response_time_samples
@@ -1246,6 +1258,7 @@ fn dashboard_daily_aggregate_record(
     provider.requests = provider.requests.saturating_add(row.requests);
     provider.tokens = provider.tokens.saturating_add(row.total_tokens);
     provider.cost += row.total_cost_usd;
+    provider.actual_cost += row.actual_total_cost_usd;
 }
 
 pub(super) async fn handle_dashboard_daily_stats_get(

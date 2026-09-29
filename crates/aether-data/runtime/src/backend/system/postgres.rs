@@ -122,7 +122,8 @@ SELECT
     COALESCE(output_tokens, 0)::BIGINT AS output_tokens,
     COALESCE(cache_creation_tokens, 0)::BIGINT AS cache_creation_tokens,
     COALESCE(cache_read_tokens, 0)::BIGINT AS cache_read_tokens,
-    COALESCE(CAST(total_cost AS DOUBLE PRECISION), 0) AS total_cost
+    COALESCE(CAST(total_cost AS DOUBLE PRECISION), 0) AS total_cost,
+    COALESCE(CAST(actual_total_cost AS DOUBLE PRECISION), 0) AS actual_total_cost
 FROM stats_user_daily
 WHERE user_id IS NOT NULL
   AND (total_requests <> 0
@@ -154,7 +155,8 @@ SELECT
     COALESCE(output_tokens, 0)::BIGINT AS output_tokens,
     COALESCE(cache_creation_tokens, 0)::BIGINT AS cache_creation_tokens,
     COALESCE(cache_read_tokens, 0)::BIGINT AS cache_read_tokens,
-    COALESCE(CAST(total_cost AS DOUBLE PRECISION), 0) AS total_cost
+    COALESCE(CAST(total_cost AS DOUBLE PRECISION), 0) AS total_cost,
+    COALESCE(CAST(actual_total_cost AS DOUBLE PRECISION), 0) AS actual_total_cost
 FROM stats_daily_api_key
 WHERE api_key_id IS NOT NULL
   AND (total_requests <> 0
@@ -176,6 +178,118 @@ ORDER BY api_key_id ASC, date ASC
     Ok(snapshot)
 }
 
+/// Billed amount for one user/day, rebuilt from the same facts the `stats_user_daily` rollup
+/// writer reads.
+///
+/// Snapshots written before `actual_total_cost` was exported carry no billed amount at all, so an
+/// import has to rebuild it instead of storing 0. Prefer facts under the target ID. An ordinary
+/// import can assign a fresh target user/API-key ID, so if those facts do not exist yet, retry the
+/// source snapshot ID. `NULL` means neither bucket has facts, which lets the caller keep whatever
+/// the target row already holds instead of guessing.
+const IMPORT_STATS_USER_DAILY_ACTUAL_COST_SQL: &str = r#"COALESCE(
+    (SELECT CASE
+        WHEN COUNT(*) > 0
+        THEN CAST(COALESCE(SUM(COALESCE(facts.actual_total_cost_usd, 0)), 0) AS DOUBLE PRECISION)
+    END
+    FROM usage_billing_facts AS facts
+    WHERE facts.user_id = $2
+      AND facts.created_at >= TO_TIMESTAMP($4::double precision)
+      AND facts.created_at < TO_TIMESTAMP($4::double precision) + INTERVAL '1 day'
+      AND facts.status NOT IN ('pending', 'streaming')
+      AND facts.provider_name NOT IN ('unknown', 'pending')),
+    (SELECT CASE
+        WHEN COUNT(*) > 0
+        THEN CAST(COALESCE(SUM(COALESCE(facts.actual_total_cost_usd, 0)), 0) AS DOUBLE PRECISION)
+    END
+    FROM usage_billing_facts AS facts
+    WHERE facts.user_id = $14
+      AND facts.created_at >= TO_TIMESTAMP($4::double precision)
+      AND facts.created_at < TO_TIMESTAMP($4::double precision) + INTERVAL '1 day'
+      AND facts.status NOT IN ('pending', 'streaming')
+      AND facts.provider_name NOT IN ('unknown', 'pending'))
+)"#;
+
+/// Same rebuild as `IMPORT_STATS_USER_DAILY_ACTUAL_COST_SQL`, for the `stats_daily_api_key` rollup.
+const IMPORT_STATS_DAILY_API_KEY_ACTUAL_COST_SQL: &str = r#"COALESCE(
+    (SELECT CASE
+        WHEN COUNT(*) > 0
+        THEN CAST(COALESCE(SUM(COALESCE(facts.actual_total_cost_usd, 0)), 0) AS DOUBLE PRECISION)
+    END
+    FROM usage_billing_facts AS facts
+    WHERE facts.api_key_id = $2
+      AND facts.created_at >= TO_TIMESTAMP($4::double precision)
+      AND facts.created_at < TO_TIMESTAMP($4::double precision) + INTERVAL '1 day'),
+    (SELECT CASE
+        WHEN COUNT(*) > 0
+        THEN CAST(COALESCE(SUM(COALESCE(facts.actual_total_cost_usd, 0)), 0) AS DOUBLE PRECISION)
+    END
+    FROM usage_billing_facts AS facts
+    WHERE facts.api_key_id = $14
+      AND facts.created_at >= TO_TIMESTAMP($4::double precision)
+      AND facts.created_at < TO_TIMESTAMP($4::double precision) + INTERVAL '1 day')
+)"#;
+
+fn build_import_stats_user_daily_sql() -> String {
+    format!(
+        r#"
+INSERT INTO stats_user_daily (
+    id, user_id, username, date, total_requests, success_requests, error_requests,
+    input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+    total_cost, actual_total_cost, created_at, updated_at
+)
+VALUES (
+    $1, $2, $3, TO_TIMESTAMP($4::double precision), $5, $6, $7,
+    $8, $9, $10, $11, $12, COALESCE($13, {billed}, 0), NOW(), NOW()
+)
+ON CONFLICT (date, user_id) DO UPDATE
+SET username = EXCLUDED.username,
+    total_requests = EXCLUDED.total_requests,
+    success_requests = EXCLUDED.success_requests,
+    error_requests = EXCLUDED.error_requests,
+    input_tokens = EXCLUDED.input_tokens,
+    output_tokens = EXCLUDED.output_tokens,
+    cache_creation_tokens = EXCLUDED.cache_creation_tokens,
+    cache_read_tokens = EXCLUDED.cache_read_tokens,
+    total_cost = EXCLUDED.total_cost,
+    -- $13 is NULL for snapshots written before the billed amount was exported: rebuild it from the
+    -- facts, and keep the stored value when there is nothing to rebuild from.
+    actual_total_cost = COALESCE($13, {billed}, stats_user_daily.actual_total_cost),
+    updated_at = NOW()
+"#,
+        billed = IMPORT_STATS_USER_DAILY_ACTUAL_COST_SQL
+    )
+}
+
+fn build_import_stats_daily_api_key_sql() -> String {
+    format!(
+        r#"
+INSERT INTO stats_daily_api_key (
+    id, api_key_id, api_key_name, date, total_requests, success_requests, error_requests,
+    input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+    total_cost, actual_total_cost, created_at, updated_at
+)
+VALUES (
+    $1, $2, $3, TO_TIMESTAMP($4::double precision), $5, $6, $7,
+    $8, $9, $10, $11, $12, COALESCE($13, {billed}, 0), NOW(), NOW()
+)
+ON CONFLICT (date, api_key_id) DO UPDATE
+SET api_key_name = EXCLUDED.api_key_name,
+    total_requests = EXCLUDED.total_requests,
+    success_requests = EXCLUDED.success_requests,
+    error_requests = EXCLUDED.error_requests,
+    input_tokens = EXCLUDED.input_tokens,
+    output_tokens = EXCLUDED.output_tokens,
+    cache_creation_tokens = EXCLUDED.cache_creation_tokens,
+    cache_read_tokens = EXCLUDED.cache_read_tokens,
+    total_cost = EXCLUDED.total_cost,
+    -- See build_import_stats_user_daily_sql for the fallback ordering.
+    actual_total_cost = COALESCE($13, {billed}, stats_daily_api_key.actual_total_cost),
+    updated_at = NOW()
+"#,
+        billed = IMPORT_STATS_DAILY_API_KEY_ACTUAL_COST_SQL
+    )
+}
+
 async fn import_postgres_admin_system_usage_aggregates(
     pool: &sqlx::PgPool,
     snapshot: &AdminSystemUsageAggregateSnapshot,
@@ -185,6 +299,8 @@ async fn import_postgres_admin_system_usage_aggregates(
 ) -> Result<AdminSystemUsageAggregateImportSummary, DataLayerError> {
     let mut tx = pool.begin().await.map_postgres_err()?;
     let mut summary = AdminSystemUsageAggregateImportSummary::default();
+    let user_daily_import_sql = build_import_stats_user_daily_sql();
+    let api_key_daily_import_sql = build_import_stats_daily_api_key_sql();
 
     for row in &snapshot.stats_daily {
         let existing: Option<String> = sqlx::query_scalar(
@@ -294,66 +410,45 @@ SET total_requests = EXCLUDED.total_requests,
             summary.stats_user_daily.skipped += 1;
             continue;
         }
-        sqlx::query(
-            r#"
-INSERT INTO stats_user_daily (
-    id, user_id, username, date, total_requests, success_requests, error_requests,
-    input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
-    total_cost, created_at, updated_at
-)
-VALUES (
-    $1, $2, $3, TO_TIMESTAMP($4::double precision), $5, $6, $7,
-    $8, $9, $10, $11, $12, NOW(), NOW()
-)
-ON CONFLICT (date, user_id) DO UPDATE
-SET username = EXCLUDED.username,
-    total_requests = EXCLUDED.total_requests,
-    success_requests = EXCLUDED.success_requests,
-    error_requests = EXCLUDED.error_requests,
-    input_tokens = EXCLUDED.input_tokens,
-    output_tokens = EXCLUDED.output_tokens,
-    cache_creation_tokens = EXCLUDED.cache_creation_tokens,
-    cache_read_tokens = EXCLUDED.cache_read_tokens,
-    total_cost = EXCLUDED.total_cost,
-    updated_at = NOW()
-"#,
-        )
-        .bind(uuid::Uuid::new_v4().to_string())
-        .bind(target_user_id)
-        .bind(row.username.as_deref())
-        .bind(i64_from_u64(row.date_unix_secs, "stats_user_daily.date")?)
-        .bind(i64_from_u64(
-            row.total_requests,
-            "stats_user_daily.total_requests",
-        )?)
-        .bind(i64_from_u64(
-            row.success_requests,
-            "stats_user_daily.success_requests",
-        )?)
-        .bind(i64_from_u64(
-            row.error_requests,
-            "stats_user_daily.error_requests",
-        )?)
-        .bind(i64_from_u64(
-            row.input_tokens,
-            "stats_user_daily.input_tokens",
-        )?)
-        .bind(i64_from_u64(
-            row.output_tokens,
-            "stats_user_daily.output_tokens",
-        )?)
-        .bind(i64_from_u64(
-            row.cache_creation_tokens,
-            "stats_user_daily.cache_creation_tokens",
-        )?)
-        .bind(i64_from_u64(
-            row.cache_read_tokens,
-            "stats_user_daily.cache_read_tokens",
-        )?)
-        .bind(row.total_cost)
-        .execute(&mut *tx)
-        .await
-        .map_postgres_err()?;
+        sqlx::query(&user_daily_import_sql)
+            .bind(uuid::Uuid::new_v4().to_string())
+            .bind(target_user_id)
+            .bind(row.username.as_deref())
+            .bind(i64_from_u64(row.date_unix_secs, "stats_user_daily.date")?)
+            .bind(i64_from_u64(
+                row.total_requests,
+                "stats_user_daily.total_requests",
+            )?)
+            .bind(i64_from_u64(
+                row.success_requests,
+                "stats_user_daily.success_requests",
+            )?)
+            .bind(i64_from_u64(
+                row.error_requests,
+                "stats_user_daily.error_requests",
+            )?)
+            .bind(i64_from_u64(
+                row.input_tokens,
+                "stats_user_daily.input_tokens",
+            )?)
+            .bind(i64_from_u64(
+                row.output_tokens,
+                "stats_user_daily.output_tokens",
+            )?)
+            .bind(i64_from_u64(
+                row.cache_creation_tokens,
+                "stats_user_daily.cache_creation_tokens",
+            )?)
+            .bind(i64_from_u64(
+                row.cache_read_tokens,
+                "stats_user_daily.cache_read_tokens",
+            )?)
+            .bind(row.total_cost)
+            .bind(row.actual_total_cost)
+            .bind(&row.user_id)
+            .execute(&mut *tx)
+            .await
+            .map_postgres_err()?;
         add_aggregate_import_count(&mut summary.stats_user_daily, existing.is_some());
     }
 
@@ -380,69 +475,48 @@ SET username = EXCLUDED.username,
             summary.stats_daily_api_key.skipped += 1;
             continue;
         }
-        sqlx::query(
-            r#"
-INSERT INTO stats_daily_api_key (
-    id, api_key_id, api_key_name, date, total_requests, success_requests, error_requests,
-    input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
-    total_cost, created_at, updated_at
-)
-VALUES (
-    $1, $2, $3, TO_TIMESTAMP($4::double precision), $5, $6, $7,
-    $8, $9, $10, $11, $12, NOW(), NOW()
-)
-ON CONFLICT (date, api_key_id) DO UPDATE
-SET api_key_name = EXCLUDED.api_key_name,
-    total_requests = EXCLUDED.total_requests,
-    success_requests = EXCLUDED.success_requests,
-    error_requests = EXCLUDED.error_requests,
-    input_tokens = EXCLUDED.input_tokens,
-    output_tokens = EXCLUDED.output_tokens,
-    cache_creation_tokens = EXCLUDED.cache_creation_tokens,
-    cache_read_tokens = EXCLUDED.cache_read_tokens,
-    total_cost = EXCLUDED.total_cost,
-    updated_at = NOW()
-"#,
-        )
-        .bind(uuid::Uuid::new_v4().to_string())
-        .bind(target_api_key_id)
-        .bind(row.api_key_name.as_deref())
-        .bind(i64_from_u64(
-            row.date_unix_secs,
-            "stats_daily_api_key.date",
-        )?)
-        .bind(i64_from_u64(
-            row.total_requests,
-            "stats_daily_api_key.total_requests",
-        )?)
-        .bind(i64_from_u64(
-            row.success_requests,
-            "stats_daily_api_key.success_requests",
-        )?)
-        .bind(i64_from_u64(
-            row.error_requests,
-            "stats_daily_api_key.error_requests",
-        )?)
-        .bind(i64_from_u64(
-            row.input_tokens,
-            "stats_daily_api_key.input_tokens",
-        )?)
-        .bind(i64_from_u64(
-            row.output_tokens,
-            "stats_daily_api_key.output_tokens",
-        )?)
-        .bind(i64_from_u64(
-            row.cache_creation_tokens,
-            "stats_daily_api_key.cache_creation_tokens",
-        )?)
-        .bind(i64_from_u64(
-            row.cache_read_tokens,
-            "stats_daily_api_key.cache_read_tokens",
-        )?)
-        .bind(row.total_cost)
-        .execute(&mut *tx)
-        .await
-        .map_postgres_err()?;
+        sqlx::query(&api_key_daily_import_sql)
+            .bind(uuid::Uuid::new_v4().to_string())
+            .bind(target_api_key_id)
+            .bind(row.api_key_name.as_deref())
+            .bind(i64_from_u64(
+                row.date_unix_secs,
+                "stats_daily_api_key.date",
+            )?)
+            .bind(i64_from_u64(
+                row.total_requests,
+                "stats_daily_api_key.total_requests",
+            )?)
+            .bind(i64_from_u64(
+                row.success_requests,
+                "stats_daily_api_key.success_requests",
+            )?)
+            .bind(i64_from_u64(
+                row.error_requests,
+                "stats_daily_api_key.error_requests",
+            )?)
+            .bind(i64_from_u64(
+                row.input_tokens,
+                "stats_daily_api_key.input_tokens",
+            )?)
+            .bind(i64_from_u64(
+                row.output_tokens,
+                "stats_daily_api_key.output_tokens",
+            )?)
+            .bind(i64_from_u64(
+                row.cache_creation_tokens,
+                "stats_daily_api_key.cache_creation_tokens",
+            )?)
+            .bind(i64_from_u64(
+                row.cache_read_tokens,
+                "stats_daily_api_key.cache_read_tokens",
+            )?)
+            .bind(row.total_cost)
+            .bind(row.actual_total_cost)
+            .bind(&row.api_key_id)
+            .execute(&mut *tx)
+            .await
+            .map_postgres_err()?;
         add_aggregate_import_count(&mut summary.stats_daily_api_key, existing.is_some());
     }
 
@@ -1329,6 +1403,7 @@ pub(super) fn map_stats_user_daily_aggregate(
         ),
         cache_read_tokens: u64_from_i64(row.try_get("cache_read_tokens").map_postgres_err()?),
         total_cost: row.try_get("total_cost").map_postgres_err()?,
+        actual_total_cost: Some(row.try_get("actual_total_cost").map_postgres_err()?),
     })
 }
 
@@ -1349,6 +1424,7 @@ pub(super) fn map_stats_daily_api_key_aggregate(
         ),
         cache_read_tokens: u64_from_i64(row.try_get("cache_read_tokens").map_postgres_err()?),
         total_cost: row.try_get("total_cost").map_postgres_err()?,
+        actual_total_cost: Some(row.try_get("actual_total_cost").map_postgres_err()?),
     })
 }
 
@@ -1373,4 +1449,79 @@ pub(super) fn map_admin_system_stats(
             .map_postgres_err()?
             .max(0) as u64,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    /// Guards the admin system snapshot round-trip: the `stats_user_daily` and
+    /// `stats_daily_api_key` payloads must carry `actual_total_cost`, and a snapshot written before
+    /// the field existed must rebuild the billed amount from the usage facts instead of storing 0.
+    #[test]
+    fn usage_aggregate_snapshot_sql_carries_actual_total_cost() {
+        let source = include_str!("postgres.rs");
+        // Ignore this test module so the needles below cannot match their own literals.
+        let production = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("source should contain a non-test prefix");
+
+        assert_eq!(
+            production
+                .matches(
+                    "COALESCE(CAST(actual_total_cost AS DOUBLE PRECISION), 0) AS actual_total_cost"
+                )
+                .count(),
+            3,
+            "stats_daily, stats_user_daily and stats_daily_api_key exports must all project actual_total_cost"
+        );
+        assert_eq!(
+            production
+                .matches("total_cost, actual_total_cost, created_at, updated_at")
+                .count(),
+            2,
+            "stats_user_daily and stats_daily_api_key imports must both write actual_total_cost"
+        );
+        assert_eq!(
+            production.matches(".bind(row.actual_total_cost)").count(),
+            3,
+            "stats_daily, stats_user_daily and stats_daily_api_key imports must all bind the snapshot actual_total_cost"
+        );
+        // Snapshot value wins; otherwise rebuild it from the facts; otherwise keep the stored row.
+        for (sql, expected) in [
+            (
+                "actual_total_cost = COALESCE($13, {billed}, stats_user_daily.actual_total_cost)",
+                1,
+            ),
+            (
+                "actual_total_cost = COALESCE($13, {billed}, stats_daily_api_key.actual_total_cost)",
+                1,
+            ),
+            ("COALESCE($13, {billed}, 0)", 2),
+            ("billed = IMPORT_STATS_USER_DAILY_ACTUAL_COST_SQL", 1),
+            ("billed = IMPORT_STATS_DAILY_API_KEY_ACTUAL_COST_SQL", 1),
+        ] {
+            assert_eq!(
+                production.matches(sql).count(),
+                expected,
+                "unexpected occurrence count for {sql}"
+            );
+        }
+
+        // The rebuild has to read the same facts with the same filters as the rollup writers.
+        for sql in [
+            "FROM usage_billing_facts AS facts",
+            "AND facts.created_at < TO_TIMESTAMP($4::double precision) + INTERVAL '1 day'",
+            "WHERE facts.user_id = $2",
+            "WHERE facts.user_id = $14",
+            "WHERE facts.api_key_id = $2",
+            "WHERE facts.api_key_id = $14",
+            "AND facts.status NOT IN ('pending', 'streaming')",
+            "AND facts.provider_name NOT IN ('unknown', 'pending')",
+        ] {
+            assert!(
+                production.contains(sql),
+                "the rebuilt billed amount must mirror the rollup writer: missing {sql}"
+            );
+        }
+    }
 }

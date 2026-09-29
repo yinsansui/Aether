@@ -2967,6 +2967,61 @@ fn usage_sql_aggregate_reads_use_materialized_total_tokens_only_when_available()
 }
 
 #[test]
+fn usage_sql_aggregate_reads_project_billed_cost_next_to_standard_price() {
+    let source = normalize_newlines(include_str!("mod.rs"));
+
+    // Raw fact reads feeding the time series, leaderboard and daily breakdown
+    // decoders must expose the billed amount without dropping the standard price.
+    for (start, end, label) in [
+        (
+            "async fn summarize_usage_time_series_raw",
+            "async fn summarize_usage_time_series_from_daily_aggregates",
+            "time series raw",
+        ),
+        (
+            "async fn summarize_usage_leaderboard_raw",
+            "async fn summarize_usage_leaderboard_from_daily_aggregates",
+            "usage leaderboard raw",
+        ),
+        (
+            "async fn list_dashboard_daily_breakdown_raw",
+            "pub async fn list_dashboard_daily_breakdown",
+            "daily breakdown raw",
+        ),
+    ] {
+        let body = source
+            .split(start)
+            .nth(1)
+            .and_then(|tail| tail.split(end).next())
+            .unwrap_or_else(|| panic!("{label} query should be present"));
+        assert!(
+            body.contains("AS total_cost_usd"),
+            "{label} should still project the standard price"
+        );
+        assert!(
+            body.contains("AS actual_total_cost_usd"),
+            "{label} should project the billed amount"
+        );
+    }
+
+    // Rollup reads take the billed mirror from the aggregate tables rather than
+    // re-deriving it from `usage_billing_facts`.
+    assert!(source.contains(
+        "COALESCE(SUM(actual_total_cost), 0)::DOUBLE PRECISION AS actual_total_cost_usd"
+    ));
+    assert!(source.contains("CAST(actual_total_cost AS DOUBLE PRECISION) AS actual_total_cost_usd"));
+    assert!(source.contains(
+        "COALESCE(SUM(CAST(actual_total_cost AS DOUBLE PRECISION)), 0) AS actual_total_cost_usd"
+    ));
+    assert!(source.contains(
+        "CAST(COALESCE(SUM(actual_total_cost), 0) AS DOUBLE PRECISION) AS actual_total_cost_usd"
+    ));
+    assert!(source.contains(
+        "CAST(COALESCE(SUM(stats_daily_api_key.actual_total_cost), 0) AS DOUBLE PRECISION)"
+    ));
+}
+
+#[test]
 fn usage_sql_aggregate_usage_audits_supports_daily_model_and_provider_aggregates() {
     let source = include_str!("mod.rs");
     assert!(source.contains("aggregate_usage_audits_from_daily_aggregates"));

@@ -189,6 +189,10 @@ fn wallet_today_usage_window() -> Result<(String, String, u64, u64), String> {
     ))
 }
 
+/// 构造钱包“按日消费”条目。
+///
+/// `total_cost` 沿用历史字段名，但含义是当天从钱包实际扣减的金额
+/// （`actual_total_cost_usd`，已含 API Key 倍率），不是标准模型价。
 pub(super) fn build_wallet_daily_usage_payload(
     id: Option<String>,
     date: String,
@@ -254,6 +258,8 @@ async fn build_wallet_live_today_usage_payload_for_auth_scope(
             created_until_unix_secs: end_unix_secs,
             user_id: user_id.map(ToOwned::to_owned),
             api_key_id: api_key_id.map(ToOwned::to_owned),
+            // 钱包口径必须取真实扣减金额，统计聚合表只有标准价，所以强制走原始事实表。
+            require_raw_source: true,
         })
         .await
         .map_err(|err| format!("wallet today cost lookup failed: {err:?}"))?;
@@ -261,7 +267,7 @@ async fn build_wallet_live_today_usage_payload_for_auth_scope(
         None,
         date,
         timezone,
-        summary.total_cost_usd,
+        summary.actual_total_cost_usd,
         summary.total_requests,
         summary.input_tokens,
         summary.output_tokens,

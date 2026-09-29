@@ -96,7 +96,7 @@
               成本
             </div>
             <div class="font-semibold">
-              {{ formatCurrency(userSummary?.total_cost ?? 0) }}
+              {{ formatCurrency(userSummary?.actual_total_cost ?? userSummary?.total_cost ?? 0) }}
             </div>
           </div>
           <div>
@@ -170,12 +170,15 @@ interface UsageSummary {
   total_requests: number
   total_tokens: number
   total_cost: number
+  /** Billed amount; falls back to `total_cost` when the payload predates the field. */
+  actual_total_cost: number
   error_rate: number
 }
 
 interface TimeSeriesItem {
   date: string
   total_cost: number
+  actual_total_cost?: number
 }
 
 const userSummary = ref<UsageSummary | null>(null)
@@ -253,7 +256,15 @@ async function loadSummary() {
       user_id: selectedUserId.value
     })
     if (requestId !== summaryRequestId) return
-    userSummary.value = { ...summary, error_rate: summary.error_rate ?? 0 }
+    const billedCost = (summary as { total_actual_cost?: number }).total_actual_cost
+    userSummary.value = {
+      ...summary,
+      error_rate: summary.error_rate ?? 0,
+      // A billed amount of 0 is valid (free tier), so only a missing value falls back.
+      actual_total_cost: typeof billedCost === 'number' && Number.isFinite(billedCost)
+        ? billedCost
+        : summary.total_cost
+    }
   } finally {
     if (requestId === summaryRequestId) {
       summaryLoading.value = false
@@ -310,12 +321,19 @@ async function loadUserPanels() {
   return userPanelsLoadPromise
 }
 
+function billedSeriesCost(item: TimeSeriesItem): number {
+  // A billed amount of 0 is valid (free tier), so only a missing value falls back.
+  return typeof item.actual_total_cost === 'number' && Number.isFinite(item.actual_total_cost)
+    ? item.actual_total_cost
+    : item.total_cost
+}
+
 const seriesChartData = computed(() => ({
   labels: series.value.map(item => item.date),
   datasets: [
     {
       label: '成本',
-      data: series.value.map(item => item.total_cost),
+      data: series.value.map(item => billedSeriesCost(item)),
       borderColor: 'rgb(59, 130, 246)',
       tension: 0.25,
       pointRadius: 2
@@ -328,14 +346,14 @@ const comparisonChartData = computed(() => ({
   datasets: [
     {
       label: '当前用户',
-      data: series.value.map(item => item.total_cost),
+      data: series.value.map(item => billedSeriesCost(item)),
       borderColor: 'rgb(59, 130, 246)',
       tension: 0.25,
       pointRadius: 2
     },
     {
       label: '对比用户',
-      data: comparisonSeries.value.map(item => item.total_cost),
+      data: comparisonSeries.value.map(item => billedSeriesCost(item)),
       borderColor: 'rgb(234, 179, 8)',
       tension: 0.25,
       pointRadius: 2

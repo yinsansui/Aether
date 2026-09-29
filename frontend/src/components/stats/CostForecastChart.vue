@@ -37,8 +37,8 @@ import { formatCurrency } from '@/utils/format'
 interface Props {
   title: string
   subtitle?: string
-  history: Array<{ date: string; total_cost: number }>
-  forecast: Array<{ date: string; total_cost: number }>
+  history: Array<{ date: string; total_cost: number; actual_total_cost?: number }>
+  forecast: Array<{ date: string; total_cost: number; actual_total_cost?: number }>
   loading?: boolean
 }
 
@@ -54,8 +54,14 @@ const labels = computed(() => [
 ])
 
 const chartData = computed(() => {
-  const historyValues = props.history.map(item => item.total_cost)
-  const forecastValues = props.forecast.map(item => item.total_cost)
+  // The legend says "实际成本", so plot the billed amount and only fall back to the
+  // standard price for legacy payloads that predate `actual_total_cost`.
+  const billedCost = (item: { total_cost: number; actual_total_cost?: number }) =>
+    typeof item.actual_total_cost === 'number' && Number.isFinite(item.actual_total_cost)
+      ? item.actual_total_cost
+      : item.total_cost
+  const historyValues = props.history.map(billedCost)
+  const forecastValues = props.forecast.map(billedCost)
   return {
     labels: labels.value,
     datasets: [

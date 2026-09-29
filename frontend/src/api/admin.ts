@@ -10,7 +10,10 @@ const ALL_SYSTEM_CONFIGS_CACHE_KEY = 'admin:system:configs'
 
 export interface AdminTimeSeriesPoint extends Record<string, unknown> {
   date: string
+  /** Standard catalog price for the bucket. */
   total_cost: number
+  /** Billed amount for the bucket (what users were actually charged). */
+  actual_total_cost: number
 }
 
 export interface AdminSystemConfigItem {
@@ -227,6 +230,8 @@ export interface StatsUserDailyAggregateExport {
   cache_creation_tokens: number
   cache_read_tokens: number
   total_cost: number
+  /** Billed amount for the day; older backups omit it. */
+  actual_total_cost?: number
 }
 
 export interface StatsDailyApiKeyAggregateExport {
@@ -241,6 +246,8 @@ export interface StatsDailyApiKeyAggregateExport {
   cache_creation_tokens: number
   cache_read_tokens: number
   total_cost: number
+  /** Billed amount for the day; older backups omit it. */
+  actual_total_cost?: number
 }
 
 export interface UsageAggregateSnapshot {
@@ -708,7 +715,10 @@ export interface LeaderboardItem {
   value: number
   requests: number
   tokens: number
+  /** Billed amount (what the user was actually charged). */
   cost: number
+  /** Standard catalog price, kept for reference. */
+  standard_cost: number
 }
 
 export interface LeaderboardResponse {
@@ -720,8 +730,8 @@ export interface LeaderboardResponse {
 }
 
 export interface CostForecastResponse {
-  history: Array<{ date: string; total_cost: number }>
-  forecast: Array<{ date: string; total_cost: number }>
+  history: Array<{ date: string; total_cost: number; actual_total_cost: number }>
+  forecast: Array<{ date: string; total_cost: number; actual_total_cost: number }>
   slope: number
   intercept: number
   start_date: string

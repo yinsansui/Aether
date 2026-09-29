@@ -62,13 +62,7 @@
             </TableCell>
             <TableCell class="text-right py-2 px-2">
               <div class="flex flex-col items-end text-xs gap-0.5">
-                <span class="text-primary font-medium">{{ formatCurrency(provider.totalCost) }}</span>
-                <span
-                  v-if="isAdmin && provider.actualCost !== undefined"
-                  class="text-muted-foreground text-[10px]"
-                >
-                  {{ formatCurrency(provider.actualCost) }}
-                </span>
+                <span class="text-primary font-medium">{{ formatCurrency(primaryCost(provider)) }}</span>
               </div>
             </TableCell>
             <TableCell class="text-right py-2 px-2">
@@ -96,12 +90,18 @@ import TableRow from '@/components/ui/table-row.vue'
 import TableHead from '@/components/ui/table-head.vue'
 import TableCell from '@/components/ui/table-cell.vue'
 import { formatTokens, formatCurrency, formatHitRate } from '@/utils/format'
+import { resolveCostDisplay } from '../utils/costDisplay'
 import type { ProviderStatsItem } from '../types'
 
 defineProps<{
   data: ProviderStatsItem[]
   isAdmin: boolean
 }>()
+
+// Charged amount is the only cost shown; it is what the wallet actually debits.
+function primaryCost(item: { totalCost: number; actualCost?: number }): number {
+  return resolveCostDisplay(item.totalCost, item.actualCost).primary
+}
 
 // 成功率样式 - 简化为两种状态
 function getSuccessRateClass(rate: number): string {

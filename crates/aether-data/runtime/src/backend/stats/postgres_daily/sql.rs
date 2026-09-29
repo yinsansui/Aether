@@ -393,6 +393,7 @@ WITH aggregated AS (
             AS cache_creation_ephemeral_1h_tokens,
         CAST(COALESCE(SUM(cache_read_input_tokens), 0) AS BIGINT) AS cache_read_tokens,
         CAST(COALESCE(SUM(total_cost_usd), 0) AS DOUBLE PRECISION) AS total_cost,
+        CAST(COALESCE(SUM(actual_total_cost_usd), 0) AS DOUBLE PRECISION) AS actual_total_cost,
         COALESCE(
             SUM(
                 CASE
@@ -436,6 +437,7 @@ INSERT INTO stats_daily_model (
     cache_creation_ephemeral_1h_tokens,
     cache_read_tokens,
     total_cost,
+    actual_total_cost,
     response_time_sum_ms,
     response_time_samples,
     avg_response_time_ms,
@@ -454,6 +456,7 @@ SELECT
     aggregated.cache_creation_ephemeral_1h_tokens,
     aggregated.cache_read_tokens,
     aggregated.total_cost,
+    aggregated.actual_total_cost,
     aggregated.response_time_sum_ms,
     aggregated.response_time_samples,
     aggregated.avg_response_time_ms,
@@ -470,6 +473,7 @@ DO UPDATE SET
     cache_creation_ephemeral_1h_tokens = EXCLUDED.cache_creation_ephemeral_1h_tokens,
     cache_read_tokens = EXCLUDED.cache_read_tokens,
     total_cost = EXCLUDED.total_cost,
+    actual_total_cost = EXCLUDED.actual_total_cost,
     response_time_sum_ms = EXCLUDED.response_time_sum_ms,
     response_time_samples = EXCLUDED.response_time_samples,
     avg_response_time_ms = EXCLUDED.avg_response_time_ms,
@@ -484,7 +488,8 @@ WITH aggregated AS (
         CAST(COALESCE(SUM(output_tokens), 0) AS BIGINT) AS output_tokens,
         CAST(COALESCE(SUM(cache_creation_input_tokens), 0) AS BIGINT) AS cache_creation_tokens,
         CAST(COALESCE(SUM(cache_read_input_tokens), 0) AS BIGINT) AS cache_read_tokens,
-        CAST(COALESCE(SUM(total_cost_usd), 0) AS DOUBLE PRECISION) AS total_cost
+        CAST(COALESCE(SUM(total_cost_usd), 0) AS DOUBLE PRECISION) AS total_cost,
+        CAST(COALESCE(SUM(actual_total_cost_usd), 0) AS DOUBLE PRECISION) AS actual_total_cost
     FROM usage_billing_facts AS usage
     WHERE created_at >= $1
       AND created_at < $2
@@ -502,6 +507,7 @@ INSERT INTO stats_daily_provider (
     cache_creation_tokens,
     cache_read_tokens,
     total_cost,
+    actual_total_cost,
     created_at,
     updated_at
 )
@@ -515,6 +521,7 @@ SELECT
     aggregated.cache_creation_tokens,
     aggregated.cache_read_tokens,
     aggregated.total_cost,
+    aggregated.actual_total_cost,
     $3,
     $3
 FROM aggregated
@@ -526,6 +533,7 @@ DO UPDATE SET
     cache_creation_tokens = EXCLUDED.cache_creation_tokens,
     cache_read_tokens = EXCLUDED.cache_read_tokens,
     total_cost = EXCLUDED.total_cost,
+    actual_total_cost = EXCLUDED.actual_total_cost,
     updated_at = EXCLUDED.updated_at
 "#;
 pub(super) const UPSERT_STATS_DAILY_MODEL_PROVIDER_SQL: &str = r#"
@@ -536,6 +544,7 @@ WITH aggregated AS (
         CAST(COUNT(id) AS BIGINT) AS total_requests,
         CAST(COALESCE(SUM(total_tokens), 0) AS BIGINT) AS total_tokens,
         CAST(COALESCE(SUM(total_cost_usd), 0) AS DOUBLE PRECISION) AS total_cost,
+        CAST(COALESCE(SUM(actual_total_cost_usd), 0) AS DOUBLE PRECISION) AS actual_total_cost,
         COALESCE(
             SUM(
                 CASE
@@ -576,6 +585,7 @@ INSERT INTO stats_daily_model_provider (
     total_requests,
     total_tokens,
     total_cost,
+    actual_total_cost,
     response_time_sum_ms,
     response_time_samples,
     created_at,
@@ -598,6 +608,7 @@ SELECT
     aggregated.total_requests,
     aggregated.total_tokens,
     aggregated.total_cost,
+    aggregated.actual_total_cost,
     aggregated.response_time_sum_ms,
     aggregated.response_time_samples,
     $3,
@@ -608,6 +619,7 @@ DO UPDATE SET
     total_requests = EXCLUDED.total_requests,
     total_tokens = EXCLUDED.total_tokens,
     total_cost = EXCLUDED.total_cost,
+    actual_total_cost = EXCLUDED.actual_total_cost,
     response_time_sum_ms = EXCLUDED.response_time_sum_ms,
     response_time_samples = EXCLUDED.response_time_samples,
     updated_at = EXCLUDED.updated_at
@@ -932,7 +944,8 @@ WITH aggregated AS (
         CAST(COALESCE(SUM(output_tokens), 0) AS BIGINT) AS output_tokens,
         CAST(COALESCE(SUM(cache_creation_input_tokens), 0) AS BIGINT) AS cache_creation_tokens,
         CAST(COALESCE(SUM(cache_read_input_tokens), 0) AS BIGINT) AS cache_read_tokens,
-        CAST(COALESCE(SUM(total_cost_usd), 0) AS DOUBLE PRECISION) AS total_cost
+        CAST(COALESCE(SUM(total_cost_usd), 0) AS DOUBLE PRECISION) AS total_cost,
+        CAST(COALESCE(SUM(actual_total_cost_usd), 0) AS DOUBLE PRECISION) AS actual_total_cost
     FROM usage_billing_facts AS usage
     WHERE created_at >= $1
       AND created_at < $2
@@ -952,6 +965,7 @@ INSERT INTO stats_daily_api_key (
     cache_creation_tokens,
     cache_read_tokens,
     total_cost,
+    actual_total_cost,
     created_at,
     updated_at
 )
@@ -968,6 +982,7 @@ SELECT
     aggregated.cache_creation_tokens,
     aggregated.cache_read_tokens,
     aggregated.total_cost,
+    aggregated.actual_total_cost,
     $3,
     $3
 FROM aggregated
@@ -982,6 +997,7 @@ DO UPDATE SET
     cache_creation_tokens = EXCLUDED.cache_creation_tokens,
     cache_read_tokens = EXCLUDED.cache_read_tokens,
     total_cost = EXCLUDED.total_cost,
+    actual_total_cost = EXCLUDED.actual_total_cost,
     updated_at = EXCLUDED.updated_at
 "#;
 pub(super) const DELETE_STATS_DAILY_ERRORS_FOR_DATE_SQL: &str = r#"
@@ -1798,6 +1814,7 @@ WITH aggregated AS (
         CAST(COUNT(id) AS BIGINT) AS total_requests,
         CAST(COALESCE(SUM(total_tokens), 0) AS BIGINT) AS total_tokens,
         CAST(COALESCE(SUM(total_cost_usd), 0) AS DOUBLE PRECISION) AS total_cost,
+        CAST(COALESCE(SUM(actual_total_cost_usd), 0) AS DOUBLE PRECISION) AS actual_total_cost,
         COALESCE(
             SUM(
                 CASE
@@ -1841,6 +1858,7 @@ INSERT INTO stats_user_daily_model_provider (
     total_requests,
     total_tokens,
     total_cost,
+    actual_total_cost,
     response_time_sum_ms,
     response_time_samples,
     created_at,
@@ -1867,6 +1885,7 @@ SELECT
     aggregated.total_requests,
     aggregated.total_tokens,
     aggregated.total_cost,
+    aggregated.actual_total_cost,
     aggregated.response_time_sum_ms,
     aggregated.response_time_samples,
     $3,
@@ -1878,6 +1897,7 @@ DO UPDATE SET
     total_requests = EXCLUDED.total_requests,
     total_tokens = EXCLUDED.total_tokens,
     total_cost = EXCLUDED.total_cost,
+    actual_total_cost = EXCLUDED.actual_total_cost,
     response_time_sum_ms = EXCLUDED.response_time_sum_ms,
     response_time_samples = EXCLUDED.response_time_samples,
     updated_at = EXCLUDED.updated_at
