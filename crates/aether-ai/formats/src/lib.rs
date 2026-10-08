@@ -42,6 +42,7 @@ pub use formats::openai::request_contract::{
     finalize_openai_provider_request_with_codex_model_capabilities,
     finalize_openai_provider_request_with_codex_model_capabilities_and_reasoning_replay_policy,
     finalize_openai_provider_request_with_codex_model_capabilities_and_reasoning_replay_policy_for_websocket_continuation,
+    finalize_openai_provider_request_with_compatibility_report,
     validate_openai_provider_request_contract, OpenAiProviderRequestContractViolation,
     OpenAiProviderRequestFinalization,
 };
@@ -53,9 +54,6 @@ pub use formats::openai::responses::codex::{
     CODEX_CLIENT_ORIGINATOR, CODEX_CLIENT_USER_AGENT, CODEX_CLIENT_VERSION,
     CODEX_MODEL_CATALOG_METADATA_FIELD, CODEX_RESPONSES_LITE_HEADER,
 };
-pub use formats::openai::responses::request::{
-    validate_openai_responses_request_contract, OpenAiResponsesRequestContractViolation,
-};
 pub use formats::openai::responses::compact_synthesis::{
     build_compact_synthesis_sse, compact_synthesis_enabled_from_report_context,
     decode_compact_synthesis_encrypted_content, encode_compact_synthesis_encrypted_content,
@@ -65,12 +63,17 @@ pub use formats::openai::responses::compact_synthesis::{
     responses_output_has_compaction_item, synthesize_compaction_client_response,
     AETHER_COMPACT_SYNTHESIS_PREFIX,
 };
+pub use formats::openai::responses::request::{
+    validate_openai_responses_request_contract, OpenAiResponsesRequestContractViolation,
+};
 pub use formats::openai::responses::{
-    normalize_openai_responses_message_item_ids, openai_responses_message_item_id,
-    openai_responses_request_operation, openai_responses_synthetic_reasoning_item_id,
+    normalize_openai_responses_message_item_ids, normalize_openai_responses_tool_replay,
+    openai_responses_message_item_id, openai_responses_request_operation,
+    openai_responses_synthetic_reasoning_item_id,
     strip_incompatible_openai_responses_reasoning_items,
     strip_incompatible_openai_responses_reasoning_items_with_policy,
-    OpenAiResponsesReasoningReplayPolicy, OPENAI_RESPONSES_OPERATION_COMPACT,
+    OpenAiResponsesReasoningReplayPolicy, OpenAiResponsesToolReplayNormalization,
+    OpenAiResponsesToolReplayPolicy, OPENAI_RESPONSES_OPERATION_COMPACT,
 };
 pub use formats::registry::{
     build_stream_transcoder, convert_request, convert_request_pure,

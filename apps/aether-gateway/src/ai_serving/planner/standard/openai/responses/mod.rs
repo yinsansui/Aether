@@ -957,6 +957,40 @@ mod continuation_fingerprint_tests {
     use crate::ai_serving::OpenAiResponsesReasoningReplayPolicy;
 
     #[test]
+    fn websocket_deepseek_tool_replay_applies_after_rules_on_create_and_continuation() {
+        let input = json!([
+            {"type": "function_call", "call_id": "find", "name": "find", "arguments": "{}"},
+            {"type": "message", "role": "developer", "content": "hook report"},
+            {"type": "function_call_output", "call_id": "find", "output": "results"}
+        ]);
+        let normalizer = ResponsesWebSocketBodyNormalization::for_tests("deepseek-v4.1-flash")
+            .with_reasoning_replay_policy_for_tests(
+                OpenAiResponsesReasoningReplayPolicy::DeepSeekOpaque,
+            )
+            .with_body_rules_for_tests(json!([{"action": "set", "path": "input", "value": input}]));
+        for previous_response_id in [None, Some("resp_stored")] {
+            let mut event = json!({
+                "type": "response.create",
+                "model": "deepseek-flash",
+                "input": [{"role": "user", "content": "before rules"}]
+            });
+            if let Some(id) = previous_response_id {
+                event["previous_response_id"] = json!(id);
+            }
+            let normalized = normalizer
+                .normalize_response_create(&event)
+                .expect("DeepSeek response.create body");
+            assert_eq!(normalized["input"], json!([input[0], input[2], input[1]]));
+            assert_eq!(normalized["model"], "deepseek-v4.1-flash");
+            assert_eq!(
+                normalized.get("previous_response_id"),
+                event.get("previous_response_id")
+            );
+            assert_eq!(event["input"][0]["role"], "user");
+        }
+    }
+
+    #[test]
     fn normalization_fingerprint_is_stable_for_json_object_key_order() {
         let first = ResponsesWebSocketBodyNormalization::for_tests("provider-model")
             .with_model_directive_patch_for_tests(json!({"reasoning": {"effort": "high"}, "x": 1}));

@@ -74,15 +74,17 @@ pub use crate::formats::openai::{
         finalize_openai_provider_request_with_codex_model_capabilities,
         finalize_openai_provider_request_with_codex_model_capabilities_and_reasoning_replay_policy,
         finalize_openai_provider_request_with_codex_model_capabilities_and_reasoning_replay_policy_for_websocket_continuation,
+        finalize_openai_provider_request_with_compatibility_report,
         validate_openai_provider_request_contract, OpenAiProviderRequestContractViolation,
         OpenAiProviderRequestFinalization,
     },
     responses::{
-        normalize_openai_responses_message_item_ids, openai_responses_message_item_id,
-        openai_responses_synthetic_reasoning_item_id,
+        normalize_openai_responses_message_item_ids, normalize_openai_responses_tool_replay,
+        openai_responses_message_item_id, openai_responses_synthetic_reasoning_item_id,
         strip_incompatible_openai_responses_reasoning_items,
         strip_incompatible_openai_responses_reasoning_items_with_policy,
-        OpenAiResponsesReasoningReplayPolicy,
+        OpenAiResponsesReasoningReplayPolicy, OpenAiResponsesToolReplayNormalization,
+        OpenAiResponsesToolReplayPolicy,
     },
 };
 pub use crate::formats::shared::error_body::{

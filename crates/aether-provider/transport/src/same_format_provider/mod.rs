@@ -585,22 +585,6 @@ fn build_same_format_provider_request_body_inner(
             ),
         );
     }
-    let stripped_reasoning_items =
-        aether_ai_formats::strip_incompatible_openai_responses_reasoning_items_with_policy(
-            &mut provider_request_body,
-            input.provider_api_format,
-            reasoning_replay_policy,
-        );
-    if stripped_reasoning_items > 0 {
-        record_compatibility_edit(
-            &mut compatibility_edits,
-            "input[].id",
-            SameFormatProviderCompatibilityEditAction::ProviderCompatibilityRewrite,
-            format!(
-                "stripped {stripped_reasoning_items} non-replayable OpenAI Responses reasoning item(s)"
-            ),
-        );
-    }
     let provider_model = provider_request_body
         .get("model")
         .and_then(Value::as_str)
@@ -616,24 +600,60 @@ fn build_same_format_provider_request_body_inner(
     ) {
         return None;
     }
-    if aether_ai_formats::finalize_openai_provider_request_with_codex_model_capabilities_and_reasoning_replay_policy(
-        &mut provider_request_body,
-        aether_ai_formats::OpenAiProviderRequestFinalization {
-            source_api_format: input.provider_api_format,
-            provider_api_format: input.provider_api_format,
-            provider_type: "",
-            provider_model: &provider_model,
-            source_model: input.source_model.unwrap_or(input.mapped_model),
-            body_rules: input.body_rules,
-            upstream_is_stream: input.upstream_is_stream,
-            require_body_stream_field,
-        },
-        None,
-        reasoning_replay_policy,
-    )
-    .is_err()
-    {
-        return None;
+    let tool_replay =
+        aether_ai_formats::finalize_openai_provider_request_with_compatibility_report(
+            &mut provider_request_body,
+            aether_ai_formats::OpenAiProviderRequestFinalization {
+                source_api_format: input.provider_api_format,
+                provider_api_format: input.provider_api_format,
+                provider_type: "",
+                provider_model: &provider_model,
+                source_model: input.source_model.unwrap_or(input.mapped_model),
+                body_rules: input.body_rules,
+                upstream_is_stream: input.upstream_is_stream,
+                require_body_stream_field,
+            },
+            None,
+            reasoning_replay_policy,
+        )
+        .map_err(|violation| {
+            tracing::debug!(
+                event_name = "provider_request_contract_violation",
+                ?violation,
+                "provider request finalization failed"
+            );
+        })
+        .ok()?;
+    if tool_replay.stripped_reasoning_items > 0 {
+        record_compatibility_edit(
+            &mut compatibility_edits,
+            "input[].id",
+            SameFormatProviderCompatibilityEditAction::ProviderCompatibilityRewrite,
+            format!(
+                "stripped {} non-replayable OpenAI Responses reasoning item(s)",
+                tool_replay.stripped_reasoning_items,
+            ),
+        );
+    }
+    if tool_replay.changed() {
+        record_compatibility_edit(
+            &mut compatibility_edits,
+            "input",
+            SameFormatProviderCompatibilityEditAction::ProviderCompatibilityRewrite,
+            format!(
+                "normalized DeepSeek tool replay: moved {} output(s), replayed {} same-turn reasoning item(s)",
+                tool_replay.reordered_tool_outputs, tool_replay.replayed_reasoning_items,
+            ),
+        );
+    }
+    if tool_replay.changed() || tool_replay.skipped_tool_batches > 0 {
+        tracing::debug!(
+            event_name = "deepseek_responses_tool_replay",
+            reordered_tool_outputs = tool_replay.reordered_tool_outputs,
+            replayed_reasoning_items = tool_replay.replayed_reasoning_items,
+            skipped_tool_batches = tool_replay.skipped_tool_batches,
+            "normalized provider-bound Responses tool history"
+        );
     }
     Some(provider_request_body)
 }
@@ -2361,6 +2381,134 @@ mod tests {
                 && edit.action
                     == SameFormatProviderCompatibilityEditAction::ProviderCompatibilityRewrite
         }));
+    }
+
+    #[test]
+    fn same_format_deepseek_tool_replay_runs_after_body_rules_and_reports_the_edits() {
+        let wire_input = json!([
+            {
+                "type": "reasoning",
+                "encrypted_content": "opaque-deepseek-state",
+                "content": [{"type": "reasoning_text", "text": "thinking"}]
+            },
+            {"type": "function_call", "call_id": "search", "name": "search", "arguments": "{}"},
+            {"type": "function_call", "call_id": "find", "name": "find", "arguments": "{}", "namespace": "mcp__openviking_memory"},
+            {"role": "developer", "content": "<openviking-usage>report</openviking-usage>"},
+            {"type": "function_call_output", "call_id": "find", "output": "find results"},
+            {"type": "function_call_output", "call_id": "search", "output": "search results"}
+        ]);
+        let body_rules = json!([{"action": "set", "path": "input", "value": wire_input}]);
+        let request = json!({
+            "model": "deepseek-flash",
+            "parallel_tool_calls": true,
+            "future_request_field": {"preserve": true},
+            "input": [{"role": "user", "content": "initial body before rules"}]
+        });
+        for upstream_is_stream in [false, true] {
+            let output = build_same_format_provider_request_body_with_compatibility_report_and_reasoning_replay_policy(
+                SameFormatProviderRequestBodyInput {
+                    body_json: &request,
+                    mapped_model: "deepseek-v4.1-flash",
+                    client_api_format: "openai:responses",
+                    provider_api_format: "openai:responses",
+                    source_model: Some("deepseek-flash"),
+                    family: SameFormatProviderFamily::Standard,
+                    body_rules: Some(&body_rules),
+                    request_headers: None,
+                    upstream_is_stream,
+                    force_body_stream_field: true,
+                    kiro_auth_config: None,
+                    is_claude_code: false,
+                    enable_model_directives: false,
+                },
+                aether_ai_formats::OpenAiResponsesReasoningReplayPolicy::DeepSeekOpaque,
+            ).expect("DeepSeek same-format request");
+            assert_eq!(
+                output.body["input"],
+                json!([
+                    wire_input[0],
+                    wire_input[1],
+                    wire_input[5],
+                    wire_input[0],
+                    wire_input[2],
+                    wire_input[4],
+                    wire_input[3]
+                ])
+            );
+            assert_eq!(output.body["model"], "deepseek-v4.1-flash");
+            assert_eq!(output.body["stream"], upstream_is_stream);
+            assert_eq!(output.body["parallel_tool_calls"], true);
+            assert_eq!(
+                output.body["future_request_field"],
+                json!({"preserve": true})
+            );
+            assert!(output.compatibility_edits.iter().any(|edit| {
+                edit.field == "input"
+                    && edit.action
+                        == SameFormatProviderCompatibilityEditAction::ProviderCompatibilityRewrite
+                    && edit.detail.contains("moved 2 output(s)")
+                    && edit
+                        .detail
+                        .contains("replayed 1 same-turn reasoning item(s)")
+            }));
+            assert_eq!(request["input"][0]["role"], "user");
+        }
+    }
+
+    #[test]
+    fn same_format_tool_replay_rejects_ambiguous_filtered_boundaries_after_body_rules() {
+        let wire_input = json!([
+            {"type": "reasoning", "encrypted_content": "R1-for-a", "content": [{"type": "reasoning_text", "text": "first"}]},
+            {"type": "function_call", "call_id": "a", "name": "lookup", "arguments": "{}"},
+            {"type": "reasoning", "id": "item_other", "summary": []},
+            {"type": "function_call", "call_id": "b", "name": "lookup", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "a", "output": "ok"},
+            {"type": "function_call_output", "call_id": "b", "output": "ok"}
+        ]);
+        let body_rules = json!([{"action": "set", "path": "input", "value": wire_input}]);
+        let request =
+            json!({"model": "deepseek-flash", "input": [{"role": "user", "content": "initial"}]});
+        for upstream_is_stream in [false, true] {
+            let output = build_same_format_provider_request_body_with_compatibility_report_and_reasoning_replay_policy(
+                SameFormatProviderRequestBodyInput {
+                    body_json: &request, mapped_model: "deepseek-flash",
+                    client_api_format: "openai:responses", provider_api_format: "openai:responses",
+                    source_model: Some("deepseek-flash"), family: SameFormatProviderFamily::Standard,
+                    body_rules: Some(&body_rules), request_headers: None, upstream_is_stream,
+                    force_body_stream_field: true, kiro_auth_config: None, is_claude_code: false,
+                    enable_model_directives: false,
+                },
+                aether_ai_formats::OpenAiResponsesReasoningReplayPolicy::DeepSeekOpaque,
+            );
+            assert!(output.is_none());
+            assert_eq!(request["input"][0]["role"], "user");
+        }
+    }
+
+    #[test]
+    fn same_format_tool_replay_rejects_reasoning_expansion_over_budget() {
+        let request = json!({"model": "deepseek-flash", "input": [
+            {"type": "reasoning", "encrypted_content": "x".repeat(8 * 1024 * 1024), "content": [{"type": "reasoning_text", "text": "thinking"}]},
+            {"type": "function_call", "call_id": "a", "name": "lookup", "arguments": "{}"},
+            {"type": "function_call", "call_id": "b", "name": "lookup", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "a", "output": "ok"},
+            {"type": "function_call_output", "call_id": "b", "output": "ok"}
+        ]});
+        for upstream_is_stream in [false, true] {
+            let output = build_same_format_provider_request_body_with_compatibility_report_and_reasoning_replay_policy(
+                SameFormatProviderRequestBodyInput {
+                    body_json: &request, mapped_model: "deepseek-flash",
+                    client_api_format: "openai:responses", provider_api_format: "openai:responses",
+                    source_model: Some("deepseek-flash"), family: SameFormatProviderFamily::Standard,
+                    body_rules: None, request_headers: None, upstream_is_stream,
+                    force_body_stream_field: true, kiro_auth_config: None, is_claude_code: false,
+                    enable_model_directives: false,
+                },
+                aether_ai_formats::OpenAiResponsesReasoningReplayPolicy::DeepSeekOpaque,
+            );
+            assert!(output.is_none());
+            assert_eq!(request["input"].as_array().unwrap().len(), 5);
+        }
     }
 
     #[test]
