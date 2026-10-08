@@ -8,6 +8,12 @@ pub mod request;
 pub mod response;
 pub mod spec;
 pub mod stream;
+mod tool_replay;
+
+pub use tool_replay::{
+    normalize_openai_responses_tool_replay, OpenAiResponsesToolReplayNormalization,
+    OpenAiResponsesToolReplayPolicy,
+};
 
 const TOOL_ERROR_PREFIX: &str = "[tool error]";
 const AETHER_REASONING_ITEM_ID_PREFIX: &str = "rs_aether_";

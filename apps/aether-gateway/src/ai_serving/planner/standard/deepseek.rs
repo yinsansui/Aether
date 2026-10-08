@@ -354,6 +354,59 @@ mod tests {
     }
 
     #[test]
+    fn third_party_deepseek_responses_tool_replay_is_repaired_on_finalization() {
+        let request = json!({
+            "model": "deepseek-flash",
+            "input": [
+                {"type": "function_call", "call_id": "find", "name": "find", "arguments": "{}"},
+                {"type": "message", "role": "developer", "content": "<openviking-usage>report</openviking-usage>"},
+                {"type": "function_call_output", "call_id": "find", "output": "results"}
+            ],
+            "future_request_field": {"preserve": true}
+        });
+        let policy = openai_responses_reasoning_replay_policy(
+            "custom",
+            "https://relay.example.com/v1",
+            "deepseek-v4.1-flash",
+        );
+        assert_eq!(
+            policy,
+            crate::ai_serving::OpenAiResponsesReasoningReplayPolicy::DeepSeekOpaque
+        );
+        let mut provider_body = crate::ai_serving::build_standard_request_body_with_model_directives_and_request_headers_and_reasoning_replay_policy(
+            &request, "openai:responses", "deepseek-v4.1-flash", "custom", "openai:responses",
+            "/v1/responses", true, None, None, None, false, policy,
+        ).expect("third-party DeepSeek body");
+        crate::ai_serving::finalize_openai_provider_request_with_codex_model_capabilities_and_reasoning_replay_policy(
+            &mut provider_body,
+            crate::ai_serving::OpenAiProviderRequestFinalization {
+                source_api_format: "openai:responses",
+                provider_api_format: "openai:responses",
+                provider_type: "custom",
+                provider_model: "deepseek-v4.1-flash",
+                source_model: "deepseek-flash",
+                body_rules: None,
+                upstream_is_stream: true,
+                require_body_stream_field: false,
+            },
+            None, policy,
+        ).expect("third-party DeepSeek finalization");
+        assert_eq!(
+            provider_body["input"],
+            json!([
+                request["input"][0],
+                request["input"][2],
+                request["input"][1]
+            ])
+        );
+        assert_eq!(
+            provider_body["future_request_field"],
+            request["future_request_field"]
+        );
+        assert_eq!(request["input"][1]["role"], "developer");
+    }
+
+    #[test]
     fn custom_deepseek_host_preserves_production_shaped_opaque_reasoning_replay() {
         let reasoning_items = (0..66)
             .map(|index| {

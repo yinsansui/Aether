@@ -54,6 +54,24 @@ pub fn finalize_openai_provider_request_with_codex_model_capabilities_and_reason
     model_capabilities: Option<&super::responses::codex::CodexResponsesModelCapabilities>,
     reasoning_replay_policy: super::responses::OpenAiResponsesReasoningReplayPolicy,
 ) -> Result<(), OpenAiProviderRequestContractViolation> {
+    finalize_openai_provider_request_with_compatibility_report(
+        body,
+        finalization,
+        model_capabilities,
+        reasoning_replay_policy,
+    )
+    .map(|_| ())
+}
+
+pub fn finalize_openai_provider_request_with_compatibility_report(
+    body: &mut Value,
+    finalization: OpenAiProviderRequestFinalization<'_>,
+    model_capabilities: Option<&super::responses::codex::CodexResponsesModelCapabilities>,
+    reasoning_replay_policy: super::responses::OpenAiResponsesReasoningReplayPolicy,
+) -> Result<
+    super::responses::OpenAiResponsesToolReplayNormalization,
+    OpenAiProviderRequestContractViolation,
+> {
     finalize_openai_provider_request_with_codex_model_capabilities_and_reasoning_replay_policy_inner(
         body,
         finalization,
@@ -76,6 +94,7 @@ pub fn finalize_openai_provider_request_with_codex_model_capabilities_and_reason
         reasoning_replay_policy,
         true,
     )
+    .map(|_| ())
 }
 
 fn finalize_openai_provider_request_with_codex_model_capabilities_and_reasoning_replay_policy_inner(
@@ -84,7 +103,10 @@ fn finalize_openai_provider_request_with_codex_model_capabilities_and_reasoning_
     model_capabilities: Option<&super::responses::codex::CodexResponsesModelCapabilities>,
     reasoning_replay_policy: super::responses::OpenAiResponsesReasoningReplayPolicy,
     websocket_continuation: bool,
-) -> Result<(), OpenAiProviderRequestContractViolation> {
+) -> Result<
+    super::responses::OpenAiResponsesToolReplayNormalization,
+    OpenAiProviderRequestContractViolation,
+> {
     let is_codex_reasoning_endpoint = finalization
         .provider_type
         .trim()
@@ -142,11 +164,31 @@ fn finalize_openai_provider_request_with_codex_model_capabilities_and_reasoning_
         body,
         finalization.provider_api_format,
     );
-    super::responses::strip_incompatible_openai_responses_reasoning_items_with_policy(
+    // The planner's replay policy identifies DeepSeek even behind a third-party relay.
+    // Select a separate tool-order policy so the normalization itself stays independent
+    // of how opaque reasoning is filtered or whether thinking is enabled on this request.
+    let tool_replay_policy = match reasoning_replay_policy {
+        super::responses::OpenAiResponsesReasoningReplayPolicy::DeepSeekOpaque => {
+            super::responses::OpenAiResponsesToolReplayPolicy::DeepSeekAdjacentPairs
+        }
+        super::responses::OpenAiResponsesReasoningReplayPolicy::OpenAiItemIds => {
+            super::responses::OpenAiResponsesToolReplayPolicy::Preserve
+        }
+    };
+    let mut tool_replay = super::responses::normalize_openai_responses_tool_replay(
         body,
         finalization.provider_api_format,
-        reasoning_replay_policy,
-    );
+        tool_replay_policy,
+    )
+    .map_err(OpenAiProviderRequestContractViolation::Responses)?;
+    // Reasoning, including items that cannot be forwarded, delimits replay batches.
+    // Pair against the original boundaries before deleting incompatible state.
+    tool_replay.stripped_reasoning_items =
+        super::responses::strip_incompatible_openai_responses_reasoning_items_with_policy(
+            body,
+            finalization.provider_api_format,
+            reasoning_replay_policy,
+        );
     if finalization
         .provider_api_format
         .trim()
@@ -178,7 +220,8 @@ fn finalize_openai_provider_request_with_codex_model_capabilities_and_reasoning_
         provider_model,
         finalization.source_model,
         body,
-    )
+    )?;
+    Ok(tool_replay)
 }
 
 pub fn validate_openai_provider_request_contract(
@@ -231,9 +274,269 @@ mod tests {
     use super::{
         finalize_openai_provider_request,
         finalize_openai_provider_request_with_codex_model_capabilities,
+        finalize_openai_provider_request_with_codex_model_capabilities_and_reasoning_replay_policy_for_websocket_continuation,
+        finalize_openai_provider_request_with_compatibility_report,
         validate_openai_provider_request_contract, OpenAiProviderRequestFinalization,
     };
-    use crate::CodexResponsesModelCapabilities;
+    use crate::{CodexResponsesModelCapabilities, OpenAiResponsesReasoningReplayPolicy};
+
+    #[test]
+    fn finalization_normalizes_deepseek_tool_replay_for_http_and_websocket_only() {
+        let input = json!([
+            {"type": "function_call", "call_id": "a", "name": "search", "arguments": "{}"},
+            {"type": "message", "role": "developer", "content": "hook context"},
+            {"type": "function_call_output", "call_id": "a", "output": "found"}
+        ]);
+        for policy in [
+            OpenAiResponsesReasoningReplayPolicy::DeepSeekOpaque,
+            OpenAiResponsesReasoningReplayPolicy::OpenAiItemIds,
+        ] {
+            for websocket in [false, true] {
+                let mut body = json!({
+                    "model": "deepseek-v4.1-flash",
+                    "previous_response_id": "resp_stored",
+                    "input": input,
+                    "stream": true
+                });
+                let finalization = OpenAiProviderRequestFinalization {
+                    source_api_format: "openai:responses",
+                    provider_api_format: "openai:responses",
+                    provider_type: "custom",
+                    provider_model: "deepseek-v4.1-flash",
+                    source_model: "deepseek-flash",
+                    body_rules: None,
+                    upstream_is_stream: true,
+                    require_body_stream_field: true,
+                };
+                if websocket {
+                    finalize_openai_provider_request_with_codex_model_capabilities_and_reasoning_replay_policy_for_websocket_continuation(
+                        &mut body, finalization, None, policy,
+                    ).expect("WebSocket finalization");
+                } else {
+                    let report = finalize_openai_provider_request_with_compatibility_report(
+                        &mut body,
+                        finalization,
+                        None,
+                        policy,
+                    )
+                    .expect("HTTP finalization");
+                    assert_eq!(
+                        report.reordered_tool_outputs,
+                        usize::from(policy == OpenAiResponsesReasoningReplayPolicy::DeepSeekOpaque)
+                    );
+                }
+                if policy == OpenAiResponsesReasoningReplayPolicy::DeepSeekOpaque {
+                    assert_eq!(body["input"], json!([input[0], input[2], input[1]]));
+                } else {
+                    assert_eq!(body["input"], input);
+                }
+                assert_eq!(body["previous_response_id"], "resp_stored");
+                assert_eq!(body["stream"], true);
+            }
+        }
+    }
+
+    #[test]
+    fn finalization_preserves_output_only_websocket_continuations() {
+        let mut body = json!({
+            "model": "deepseek-v4.1-flash",
+            "previous_response_id": "resp_stored",
+            "input": [
+                {"role": "developer", "content": "hook context"},
+                {"type": "function_call_output", "call_id": "a", "output": "found"}
+            ]
+        });
+        let original_input = body["input"].clone();
+        finalize_openai_provider_request_with_codex_model_capabilities_and_reasoning_replay_policy_for_websocket_continuation(
+            &mut body,
+            OpenAiProviderRequestFinalization {
+                source_api_format: "openai:responses",
+                provider_api_format: "openai:responses",
+                provider_type: "custom",
+                provider_model: "deepseek-v4.1-flash",
+                source_model: "deepseek-flash",
+                body_rules: None,
+                upstream_is_stream: true,
+                require_body_stream_field: false,
+            },
+            None,
+            OpenAiResponsesReasoningReplayPolicy::DeepSeekOpaque,
+        ).expect("output-only continuation");
+        assert_eq!(body["input"], original_input);
+        assert_eq!(body["previous_response_id"], "resp_stored");
+    }
+
+    #[test]
+    fn finalization_tool_replay_rejects_ambiguous_filtered_reasoning_boundaries() {
+        let input = json!([
+            {"type": "reasoning", "encrypted_content": "R1-for-a", "content": [{"type": "reasoning_text", "text": "first"}]},
+            {"type": "function_call", "call_id": "a", "name": "lookup", "arguments": "{}"},
+            {"type": "reasoning", "id": "item_other", "summary": []},
+            {"type": "function_call", "call_id": "b", "name": "lookup", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "a", "output": "ok"},
+            {"type": "function_call_output", "call_id": "b", "output": "ok"}
+        ]);
+        for websocket in [false, true] {
+            let mut body = json!({"model": "deepseek-flash", "input": input, "previous_response_id": "resp_stored"});
+            let finalization = OpenAiProviderRequestFinalization {
+                source_api_format: "openai:responses",
+                provider_api_format: "openai:responses",
+                provider_type: "custom",
+                provider_model: "deepseek-flash",
+                source_model: "deepseek-flash",
+                body_rules: None,
+                upstream_is_stream: true,
+                require_body_stream_field: false,
+            };
+            if websocket {
+                finalize_openai_provider_request_with_codex_model_capabilities_and_reasoning_replay_policy_for_websocket_continuation(
+                    &mut body, finalization, None, OpenAiResponsesReasoningReplayPolicy::DeepSeekOpaque,
+                ).unwrap_err();
+            } else {
+                let error = finalize_openai_provider_request_with_compatibility_report(
+                    &mut body,
+                    finalization,
+                    None,
+                    OpenAiResponsesReasoningReplayPolicy::DeepSeekOpaque,
+                )
+                .unwrap_err();
+                assert!(
+                    matches!(error, super::OpenAiProviderRequestContractViolation::Responses(violation)
+                    if violation.reason.contains("batch boundary"))
+                );
+            }
+            assert_eq!(body["input"], input);
+        }
+    }
+
+    #[test]
+    fn finalization_tool_replay_filters_reasoning_between_complete_batches_idempotently() {
+        let input = json!([
+            {"type": "reasoning", "id": "item_before", "summary": []},
+            {"type": "reasoning", "encrypted_content": "first", "content": [{"type": "reasoning_text", "text": "first"}]},
+            {"type": "function_call", "call_id": "a", "name": "lookup", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "a", "output": "ok"},
+            {"type": "reasoning", "id": "item_between", "summary": []},
+            {"type": "reasoning", "encrypted_content": "second", "content": [{"type": "reasoning_text", "text": "second"}]},
+            {"type": "function_call", "call_id": "b", "name": "lookup", "arguments": "{}"},
+            {"type": "function_call", "call_id": "c", "name": "lookup", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "b", "output": "ok"},
+            {"type": "function_call_output", "call_id": "c", "output": "ok"}
+        ]);
+        let mut body = json!({"model": "deepseek-flash", "input": input});
+        let finalization = OpenAiProviderRequestFinalization {
+            source_api_format: "openai:responses",
+            provider_api_format: "openai:responses",
+            provider_type: "custom",
+            provider_model: "deepseek-flash",
+            source_model: "deepseek-flash",
+            body_rules: None,
+            upstream_is_stream: true,
+            require_body_stream_field: false,
+        };
+        let report = finalize_openai_provider_request_with_compatibility_report(
+            &mut body,
+            finalization,
+            None,
+            OpenAiResponsesReasoningReplayPolicy::DeepSeekOpaque,
+        )
+        .unwrap();
+        assert_eq!(report.stripped_reasoning_items, 2);
+        assert_eq!(report.replayed_reasoning_items, 1);
+        assert_eq!(
+            body["input"],
+            json!([
+                input[1], input[2], input[3], input[5], input[6], input[8], input[5], input[7],
+                input[9]
+            ])
+        );
+        let once = body.clone();
+        assert_eq!(
+            finalize_openai_provider_request_with_compatibility_report(
+                &mut body,
+                finalization,
+                None,
+                OpenAiResponsesReasoningReplayPolicy::DeepSeekOpaque,
+            )
+            .unwrap(),
+            super::super::responses::OpenAiResponsesToolReplayNormalization::default()
+        );
+        assert_eq!(body, once);
+    }
+
+    #[test]
+    fn finalization_tool_replay_never_copies_filtered_signature_carriers() {
+        let mut body = json!({"model": "deepseek-flash", "input": [
+            {"type": "reasoning", "encrypted_content": "cpa-gemini-responses-carrier-v1:opaque", "content": [{"type": "reasoning_text", "text": "foreign state"}]},
+            {"type": "function_call", "call_id": "a", "name": "lookup", "arguments": "{}"},
+            {"type": "function_call", "call_id": "b", "name": "lookup", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "a", "output": "ok"},
+            {"type": "function_call_output", "call_id": "b", "output": "ok"}
+        ]});
+        let report = finalize_openai_provider_request_with_compatibility_report(
+            &mut body,
+            OpenAiProviderRequestFinalization {
+                source_api_format: "openai:responses",
+                provider_api_format: "openai:responses",
+                provider_type: "custom",
+                provider_model: "deepseek-flash",
+                source_model: "deepseek-flash",
+                body_rules: None,
+                upstream_is_stream: true,
+                require_body_stream_field: false,
+            },
+            None,
+            OpenAiResponsesReasoningReplayPolicy::DeepSeekOpaque,
+        )
+        .unwrap();
+        assert_eq!(report.replayed_reasoning_items, 0);
+        assert_eq!(report.stripped_reasoning_items, 1);
+        assert_eq!(body["input"].as_array().unwrap().len(), 4);
+        assert_eq!(body["input"][1]["call_id"], "a");
+        assert_eq!(body["input"][3]["call_id"], "b");
+    }
+
+    #[test]
+    fn finalization_tool_replay_propagates_budget_failure_for_http_and_websocket() {
+        for websocket in [false, true] {
+            let mut body = json!({"model": "deepseek-flash", "previous_response_id": "resp_stored", "input": [
+                {"type": "reasoning", "encrypted_content": "x".repeat(8 * 1024 * 1024), "content": [{"type": "reasoning_text", "text": "thinking"}]},
+                {"type": "function_call", "call_id": "a", "name": "lookup", "arguments": "{}"},
+                {"type": "function_call", "call_id": "b", "name": "lookup", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "a", "output": "ok"},
+                {"type": "function_call_output", "call_id": "b", "output": "ok"}
+            ]});
+            let original_input = body["input"].clone();
+            let finalization = OpenAiProviderRequestFinalization {
+                source_api_format: "openai:responses",
+                provider_api_format: "openai:responses",
+                provider_type: "custom",
+                provider_model: "deepseek-flash",
+                source_model: "deepseek-flash",
+                body_rules: None,
+                upstream_is_stream: true,
+                require_body_stream_field: false,
+            };
+            let error = if websocket {
+                finalize_openai_provider_request_with_codex_model_capabilities_and_reasoning_replay_policy_for_websocket_continuation(
+                    &mut body, finalization, None, OpenAiResponsesReasoningReplayPolicy::DeepSeekOpaque,
+                ).unwrap_err()
+            } else {
+                finalize_openai_provider_request_with_compatibility_report(
+                    &mut body,
+                    finalization,
+                    None,
+                    OpenAiResponsesReasoningReplayPolicy::DeepSeekOpaque,
+                )
+                .unwrap_err()
+            };
+            assert!(
+                matches!(error, super::OpenAiProviderRequestContractViolation::Responses(violation)
+                if violation.field == "input" && violation.reason.contains("8 MiB"))
+            );
+            assert_eq!(body["input"], original_input);
+        }
+    }
 
     #[test]
     fn validates_reasoning_and_prompt_cache_against_the_final_provider_model() {
