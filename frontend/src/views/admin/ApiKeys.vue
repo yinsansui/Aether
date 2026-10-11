@@ -791,7 +791,7 @@
       :open="showWalletActionDrawer"
       :wallet="walletActionTarget?.wallet || null"
       :owner-name="walletActionTarget?.apiKey.name || walletActionTarget?.apiKey.key_display || '未命名 Key'"
-      :owner-subtitle="walletActionTarget?.apiKey.key_display || walletActionTarget?.apiKey.username || ''"
+      :owner-subtitle="walletActionTarget?.apiKey.key_display || userIdentityLabel(walletActionTarget?.apiKey)"
       context-label="独立密钥钱包"
       accent="blue"
       :show-refunds="false"
@@ -802,6 +802,7 @@
 </template>
 
 <script setup lang="ts">
+import { userIdentityLabel } from '@/utils/userIdentity'
 import { getI18nLocale } from '@/i18n'
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useToast } from '@/composables/useToast'
@@ -954,7 +955,7 @@ const filteredApiKeys = computed(() => {
   if (searchQuery.value) {
     const keywords = searchQuery.value.toLowerCase().split(/\s+/).filter(k => k.length > 0)
     result = result.filter(key => {
-      const searchableText = `${key.name || ''} ${key.key_display || ''} ${key.username || ''} ${key.user_email || ''}`.toLowerCase()
+      const searchableText = `${key.name || ''} ${key.key_display || ''} ${key.username || ''} ${key.display_name || ''} ${key.user_email || ''}`.toLowerCase()
       return keywords.every(keyword => searchableText.includes(keyword))
     })
   }

@@ -27,6 +27,12 @@ length = 255
 nullable = true
 
 [[table.users.columns]]
+name = "display_name"
+type = "text"
+length = 100
+nullable = true
+
+[[table.users.columns]]
 name = "password_hash"
 type = "text"
 length = 255

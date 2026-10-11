@@ -121,6 +121,9 @@ impl AppState {
             for user in self.list_users_by_ids(&user_ids).await? {
                 users.insert(user.id.clone(), user);
             }
+            // The batch reader is authoritative, including misses for deleted users.
+            // Per-user auth lookups would turn those misses into serial N+1 queries.
+            return Ok(users);
         }
 
         for user_id in &user_ids {
@@ -162,12 +165,20 @@ impl AppState {
 
         #[cfg(test)]
         if let Some(store) = self.auth_user_store.as_ref() {
-            let username_search = username_search.to_ascii_lowercase();
+            let username_search = username_search.to_lowercase();
             for user in store.lock().expect("auth user store should lock").values() {
                 if user
                     .username
                     .to_ascii_lowercase()
                     .contains(&username_search)
+                    || user
+                        .display_name
+                        .as_deref()
+                        .is_some_and(|name| name.to_lowercase().contains(&username_search))
+                    || user
+                        .email
+                        .as_deref()
+                        .is_some_and(|email| email.to_lowercase().contains(&username_search))
                 {
                     let summary = user
                         .to_summary()
@@ -472,6 +483,31 @@ impl AppState {
         email_verified: Option<bool>,
         username: Option<String>,
     ) -> Result<Option<aether_data::repository::users::StoredUserAuthRecord>, GatewayError> {
+        self.update_local_auth_user_profile_with_display_name(
+            user_id,
+            email_present,
+            email,
+            email_verified,
+            username,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn update_local_auth_user_profile_with_display_name(
+        &self,
+        user_id: &str,
+        email_present: bool,
+        email: Option<String>,
+        email_verified: Option<bool>,
+        username: Option<String>,
+        display_name: Option<Option<String>>,
+    ) -> Result<Option<aether_data::repository::users::StoredUserAuthRecord>, GatewayError> {
+        let display_name = display_name
+            .map(aether_data::repository::users::normalize_user_display_name)
+            .transpose()
+            .map_err(|err| GatewayError::Internal(err.to_string()))?;
         #[cfg(test)]
         if let Some(store) = self.auth_user_store.as_ref() {
             let existing = {
@@ -501,6 +537,9 @@ impl AppState {
             if let Some(username) = username {
                 user.username = username;
             }
+            if let Some(display_name) = display_name {
+                user.display_name = display_name;
+            }
             store
                 .lock()
                 .expect("auth user store should lock")
@@ -511,7 +550,14 @@ impl AppState {
 
         let user = self
             .data
-            .update_local_auth_user_profile(user_id, email_present, email, email_verified, username)
+            .update_local_auth_user_profile_with_display_name(
+                user_id,
+                email_present,
+                email,
+                email_verified,
+                username,
+                display_name,
+            )
             .await
             .map_err(|err| GatewayError::Internal(err.to_string()))?;
         if user.is_some() {
@@ -962,6 +1008,35 @@ impl AppState {
         allowed_models: Option<Vec<String>>,
         rate_limit: Option<i32>,
     ) -> Result<Option<aether_data::repository::users::StoredUserAuthRecord>, GatewayError> {
+        self.create_local_auth_user_with_settings_and_display_name(
+            email,
+            email_verified,
+            username,
+            password_hash,
+            role,
+            allowed_providers,
+            allowed_api_formats,
+            allowed_models,
+            rate_limit,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn create_local_auth_user_with_settings_and_display_name(
+        &self,
+        email: Option<String>,
+        email_verified: bool,
+        username: String,
+        password_hash: String,
+        role: String,
+        allowed_providers: Option<Vec<String>>,
+        allowed_api_formats: Option<Vec<String>>,
+        allowed_models: Option<Vec<String>>,
+        rate_limit: Option<i32>,
+        display_name: Option<String>,
+    ) -> Result<Option<aether_data::repository::users::StoredUserAuthRecord>, GatewayError> {
         #[cfg(test)]
         if let Some(store) = self.auth_user_store.as_ref() {
             let now = chrono::Utc::now();
@@ -981,6 +1056,7 @@ impl AppState {
                 Some(now),
                 None,
             )
+            .and_then(|record| record.with_display_name(display_name.clone()))
             .map_err(|err| GatewayError::Internal(err.to_string()))?;
             store
                 .lock()
@@ -991,7 +1067,7 @@ impl AppState {
         }
 
         self.data
-            .create_local_auth_user_with_settings(
+            .create_local_auth_user_with_settings_and_display_name(
                 email,
                 email_verified,
                 username,
@@ -1001,6 +1077,7 @@ impl AppState {
                 allowed_api_formats,
                 allowed_models,
                 rate_limit,
+                display_name,
             )
             .await
             .map_err(|err| GatewayError::Internal(err.to_string()))
@@ -1399,6 +1476,49 @@ mod tests {
             ip_rules: None,
             verified_api_key_hash: None,
         }
+    }
+
+    #[tokio::test]
+    async fn summary_batch_reader_misses_do_not_fall_back_to_auth_users() {
+        use aether_data::repository::users::StoredUserAuthRecord;
+        let user = StoredUserAuthRecord::new(
+            "missing-user".into(),
+            None,
+            false,
+            "old-account".into(),
+            None,
+            "user".into(),
+            "local".into(),
+            None,
+            None,
+            None,
+            true,
+            false,
+            None,
+            None,
+        )
+        .unwrap();
+        let state = AppState::new()
+            .unwrap()
+            .with_data_state_for_tests(GatewayDataState::with_user_reader_for_tests(Arc::new(
+                InMemoryUserReadRepository::default(),
+            )))
+            .with_auth_users_for_tests([user.clone()]);
+        let ids = vec![user.id.clone(), "  ".into(), user.id.clone()];
+        assert!(state
+            .resolve_auth_user_summaries_by_ids(&ids)
+            .await
+            .unwrap()
+            .is_empty());
+
+        // The legacy overlay remains supported when no authoritative reader exists.
+        let state = AppState::new().unwrap().with_auth_users_for_tests([user]);
+        let users = state
+            .resolve_auth_user_summaries_by_ids(&ids)
+            .await
+            .unwrap();
+        assert_eq!(users.len(), 1);
+        assert_eq!(users["missing-user"].username, "old-account");
     }
 
     #[tokio::test]

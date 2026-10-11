@@ -157,5 +157,5 @@ function updateSort(value: string) {
 }
 
 const { legacyT } = useI18n()
-const searchPlaceholder = computed(() => props.mobile ? legacyT('搜索...') : legacyT('搜索用户名或邮箱...'))
+const searchPlaceholder = computed(() => legacyT('搜索姓名、登录账号或邮箱...'))
 </script>

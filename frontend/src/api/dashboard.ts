@@ -207,6 +207,7 @@ export interface RequestDetail {
   user: {
     id: string // UUID
     username: string
+    display_name?: string | null
     email: string
   }
   api_key: {

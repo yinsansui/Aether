@@ -33,7 +33,7 @@ SELECT COUNT(*)
 FROM audit_logs AS a
 LEFT JOIN users AS u ON a.user_id = u.id
 WHERE a.created_at >= $1
-  AND ($2::text IS NULL OR u.username ILIKE $2 ESCAPE '\')
+  AND ($2::text IS NULL OR u.username ILIKE $2 ESCAPE '\' OR u.display_name ILIKE $2 ESCAPE '\')
   AND ($3::text IS NULL OR a.event_type = $3)
 "#,
         )
@@ -52,6 +52,7 @@ SELECT
   a.user_id,
   u.email AS user_email,
   u.username AS user_username,
+  u.display_name AS user_display_name,
   a.description,
   a.ip_address,
   a.status_code,
@@ -61,7 +62,7 @@ SELECT
 FROM audit_logs AS a
 LEFT JOIN users AS u ON a.user_id = u.id
 WHERE a.created_at >= $1
-  AND ($2::text IS NULL OR u.username ILIKE $2 ESCAPE '\')
+  AND ($2::text IS NULL OR u.username ILIKE $2 ESCAPE '\' OR u.display_name ILIKE $2 ESCAPE '\')
   AND ($3::text IS NULL OR a.event_type = $3)
 ORDER BY a.created_at DESC
 LIMIT $4 OFFSET $5
@@ -245,6 +246,7 @@ fn map_postgres_admin_audit_log_row(row: &PgRow) -> Result<StoredAdminAuditLog, 
         user_id: row.try_get("user_id").map_postgres_err()?,
         user_email: row.try_get("user_email").map_postgres_err()?,
         user_username: row.try_get("user_username").map_postgres_err()?,
+        user_display_name: row.try_get("user_display_name").map_postgres_err()?,
         description: row.try_get("description").map_postgres_err()?,
         ip_address: row.try_get("ip_address").map_postgres_err()?,
         status_code: row.try_get("status_code").map_postgres_err()?,

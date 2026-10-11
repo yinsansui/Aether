@@ -12,6 +12,7 @@ export interface Announcement {
   author: {
     id: string // UUID
     username: string
+    display_name?: string | null
   }
   start_time?: string
   end_time?: string

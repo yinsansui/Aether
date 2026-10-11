@@ -157,10 +157,14 @@ pub(super) fn build_admin_api_key_list_item_payload(
     state: &AdminAppState<'_>,
     record: &aether_data::repository::auth::StoredAuthApiKeyExportRecord,
     wallet: Option<&aether_data::repository::wallet::StoredWalletSnapshot>,
+    user: Option<&aether_data::repository::users::StoredUserSummary>,
 ) -> serde_json::Value {
     json!({
         "id": record.api_key_id,
         "user_id": record.user_id,
+        "user_email": user.and_then(|value| value.email.clone()),
+        "username": user.map(|value| value.username.clone()),
+        "display_name": user.and_then(|value| value.display_name.clone()),
         "name": record.name,
         "key_display": masked_admin_api_key_display(state, record),
         "is_active": record.is_active,
@@ -188,10 +192,14 @@ pub(super) fn build_admin_api_key_detail_payload(
     state: &AdminAppState<'_>,
     record: &aether_data::repository::auth::StoredAuthApiKeyExportRecord,
     wallet: Option<&aether_data::repository::wallet::StoredWalletSnapshot>,
+    user: Option<&aether_data::repository::users::StoredUserSummary>,
 ) -> serde_json::Value {
     json!({
         "id": record.api_key_id,
         "user_id": record.user_id,
+        "user_email": user.and_then(|value| value.email.clone()),
+        "username": user.map(|value| value.username.clone()),
+        "display_name": user.and_then(|value| value.display_name.clone()),
         "name": record.name,
         "key_display": masked_admin_api_key_display(state, record),
         "is_active": record.is_active,

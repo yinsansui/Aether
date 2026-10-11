@@ -18,7 +18,7 @@ use super::builders::{
     admin_video_task_detail_id_from_path, admin_video_task_error_projection,
     admin_video_task_nested_id_from_path, admin_video_task_status_name, admin_video_task_timestamp,
     build_admin_video_task_list_item, build_admin_video_task_provider_names,
-    current_admin_video_task_unix_secs,
+    build_admin_video_task_user_identities, current_admin_video_task_unix_secs,
 };
 
 pub(super) async fn maybe_build_local_admin_video_tasks_response(
@@ -65,12 +65,14 @@ pub(super) async fn maybe_build_local_admin_video_tasks_response(
             .read_video_task_page_summary(&filter, page, page_size)
             .await?;
         let provider_names = build_admin_video_task_provider_names(state, &response.items).await?;
+        let user_identities =
+            build_admin_video_task_user_identities(state, &response.items).await?;
         return Ok(Some(
             Json(json!({
                 "items": response
                     .items
                     .iter()
-                    .map(|task| build_admin_video_task_list_item(task, &provider_names))
+                    .map(|task| build_admin_video_task_list_item(task, &provider_names, &user_identities))
                     .collect::<Vec<_>>(),
                 "total": response.total,
                 "page": response.page,
@@ -178,6 +180,8 @@ pub(super) async fn maybe_build_local_admin_video_tasks_response(
             };
             let provider_names =
                 build_admin_video_task_provider_names(state, std::slice::from_ref(&task)).await?;
+            let user_identities =
+                build_admin_video_task_user_identities(state, std::slice::from_ref(&task)).await?;
             let provider_name = task
                 .provider_id
                 .as_deref()
@@ -199,16 +203,21 @@ pub(super) async fn maybe_build_local_admin_video_tasks_response(
                     "api_format": endpoint.api_format,
                 })
             });
+            let user = task.user_id.as_ref().and_then(|id| user_identities.get(id));
             let mut payload = serde_json::Map::new();
             payload.insert("id".to_string(), json!(task.id));
             payload.insert("external_task_id".to_string(), json!(task.external_task_id));
             payload.insert("user_id".to_string(), json!(task.user_id));
             payload.insert(
                 "username".to_string(),
-                json!(task
-                    .username
-                    .clone()
-                    .unwrap_or_else(|| "Unknown".to_string())),
+                json!(user
+                    .map(|user| user.username.as_str())
+                    .or(task.username.as_deref())
+                    .unwrap_or("Unknown")),
+            );
+            payload.insert(
+                "display_name".to_string(),
+                json!(user.and_then(|user| user.display_name.as_deref())),
             );
             payload.insert("api_key_id".to_string(), json!(task.api_key_id));
             payload.insert("provider_id".to_string(), json!(task.provider_id));

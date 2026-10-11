@@ -314,7 +314,7 @@ async function loadHeatmapData() {
 async function loadAdminUsers() {
   try {
     const users = await usersApi.getAllUsers()
-    availableUsers.value = users.map(u => ({ id: u.id, username: u.username, email: u.email }))
+    availableUsers.value = users.map(u => ({ id: u.id, username: u.username, display_name: u.display_name, email: u.email }))
   } catch (error) {
     log.error('加载用户列表失败:', error)
   }

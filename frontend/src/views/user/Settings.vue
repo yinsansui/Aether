@@ -26,9 +26,23 @@
               </Button>
             </div>
 
+            <div class="rounded-lg bg-muted/35 p-3">
+              <Label for="display-name">姓名</Label>
+              <Input
+                id="display-name"
+                :model-value="profile?.display_name ?? ''"
+                readonly
+                class="mt-1"
+                placeholder="未设置"
+              />
+              <p class="mt-1 text-xs text-muted-foreground">
+                姓名由管理员维护，如需修改请联系管理员。
+              </p>
+            </div>
+
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <Label for="username">用户名</Label>
+                <Label for="username">登录账号</Label>
                 <Input
                   id="username"
                   v-model="profileForm.username"

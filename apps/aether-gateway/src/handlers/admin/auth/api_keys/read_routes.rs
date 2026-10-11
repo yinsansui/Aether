@@ -52,10 +52,22 @@ pub(super) async fn build_admin_list_api_keys_response(
         .iter()
         .map(|record| record.api_key_id.clone())
         .collect::<Vec<_>>();
-    let wallet_lookup_started_at = Instant::now();
-    let wallets_by_api_key_id = state
-        .list_wallet_snapshots_by_api_key_ids(&api_key_ids)
-        .await?
+    let user_ids = paged_records
+        .iter()
+        .map(|record| record.user_id.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let related_lookup_started_at = Instant::now();
+    let (users, wallets) = tokio::try_join!(
+        state.list_users_by_ids(&user_ids),
+        state.list_wallet_snapshots_by_api_key_ids(&api_key_ids),
+    )?;
+    let users_by_id = users
+        .into_iter()
+        .map(|user| (user.id.clone(), user))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let wallets_by_api_key_id = wallets
         .into_iter()
         .filter_map(|wallet| {
             wallet
@@ -64,7 +76,7 @@ pub(super) async fn build_admin_list_api_keys_response(
                 .map(|api_key_id| (api_key_id, wallet))
         })
         .collect::<std::collections::BTreeMap<_, _>>();
-    let wallet_lookup_ms = wallet_lookup_started_at.elapsed().as_millis() as u64;
+    let related_lookup_ms = related_lookup_started_at.elapsed().as_millis() as u64;
 
     let api_keys = paged_records
         .iter()
@@ -73,6 +85,7 @@ pub(super) async fn build_admin_list_api_keys_response(
                 state,
                 record,
                 wallets_by_api_key_id.get(&record.api_key_id),
+                users_by_id.get(&record.user_id),
             )
         })
         .collect::<Vec<_>>();
@@ -84,7 +97,7 @@ pub(super) async fn build_admin_list_api_keys_response(
         returned_items = api_keys.len(),
         total,
         count_and_page_ms,
-        wallet_lookup_ms,
+        related_lookup_ms,
         handler_ms = handler_started_at.elapsed().as_millis() as u64,
         "measured admin api keys list handler timing"
     );
@@ -156,16 +169,22 @@ pub(super) async fn build_admin_api_key_detail_response(
         ));
     }
 
-    let wallet = state
-        .list_wallet_snapshots_by_api_key_ids(std::slice::from_ref(&api_key_id))
-        .await?
+    let (wallets, users) = tokio::try_join!(
+        state.list_wallet_snapshots_by_api_key_ids(std::slice::from_ref(&api_key_id)),
+        state.list_users_by_ids(std::slice::from_ref(&record.user_id)),
+    )?;
+    let wallet = wallets
         .into_iter()
         .find(|wallet| wallet.api_key_id.as_deref() == Some(api_key_id.as_str()));
+    let user = users
+        .into_iter()
+        .next();
 
     Ok(Json(build_admin_api_key_detail_payload(
         state,
         &record,
         wallet.as_ref(),
+        user.as_ref(),
     ))
     .into_response())
 }

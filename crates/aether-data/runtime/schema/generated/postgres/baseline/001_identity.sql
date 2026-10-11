@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS public.users (
     external_id character varying(255),
     email character varying(320),
     username character varying(255),
+    display_name character varying(100),
     password_hash character varying(255),
     role character varying(64),
     auth_source character varying(64) DEFAULT 'local' NOT NULL,

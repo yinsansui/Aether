@@ -185,6 +185,7 @@ fn synthetic_rollback_export_row(
         model_capability_settings,
         auth.is_active,
     )
+    .and_then(|row| row.with_display_name(auth.display_name.clone()))
     .map(|row| row.with_feature_settings(feature_settings))
     .and_then(|row| {
         row.with_policy_modes(
@@ -1815,6 +1816,16 @@ fn imported_optional_string(value: Option<&Value>) -> Result<Option<String>, Str
         }
         _ => Err("字段必须是字符串".to_string()),
     }
+}
+
+fn imported_user_display_name(value: Option<&Value>) -> Result<Option<String>, String> {
+    // Validate the original value so trim cannot hide leading/trailing controls.
+    let name = match value {
+        None | Some(Value::Null) => None,
+        Some(Value::String(name)) => Some(name.clone()),
+        _ => return Err("姓名必须为字符串或 null".to_string()),
+    };
+    aether_data::repository::users::normalize_user_display_name(name).map_err(|err| err.to_string())
 }
 
 fn normalize_imported_system_user_role(
@@ -3800,6 +3811,7 @@ impl<'a> AdminAppState<'a> {
                 invalid!(imported_optional_string(user.get("username")));
                 continue;
             };
+            invalid!(imported_user_display_name(user.get("display_name")));
             let email = invalid!(imported_optional_string(user.get("email")))
                 .map(|value| value.to_ascii_lowercase());
             let username = invalid!(imported_optional_string(user.get("username")))
@@ -7128,6 +7140,10 @@ impl<'a> AdminAppState<'a> {
                 continue;
             };
 
+            let display_name = invalid_value!(imported_user_display_name(user.get("display_name")));
+            let display_name_patch = user
+                .contains_key("display_name")
+                .then(|| display_name.clone());
             let email = invalid_value!(imported_optional_string(user.get("email")))
                 .map(|value| value.to_ascii_lowercase());
             let email_verified =
@@ -7310,12 +7326,13 @@ impl<'a> AdminAppState<'a> {
                             })
                         };
                         let updated_profile = self
-                            .update_local_auth_user_profile(
+                            .update_local_auth_user_profile_with_display_name(
                                 &existing.id,
                                 email_present,
                                 email.clone(),
                                 email_verified_update,
                                 Some(username.clone()),
+                                display_name_patch.clone(),
                             )
                             .await?;
                         if updated_profile.is_none() {
@@ -7478,7 +7495,7 @@ impl<'a> AdminAppState<'a> {
                 }
             } else {
                 let created = self
-                    .create_local_auth_user_with_settings(
+                    .create_local_auth_user_with_settings_and_display_name(
                         email.clone(),
                         email_verified,
                         username.clone(),
@@ -7488,6 +7505,7 @@ impl<'a> AdminAppState<'a> {
                         allowed_api_formats.clone(),
                         allowed_models.clone(),
                         rate_limit,
+                        display_name.clone(),
                     )
                     .await?;
                 let Some(created) = created else {
@@ -8645,6 +8663,38 @@ mod tests {
         StoredProviderCatalogKey, StoredProviderCatalogProvider,
     };
     use serde_json::json;
+
+    #[test]
+    fn display_name_import_validates_controls_before_trimming() {
+        use super::imported_user_display_name;
+        assert_eq!(imported_user_display_name(None).unwrap(), None);
+        assert_eq!(
+            imported_user_display_name(Some(&json!(null))).unwrap(),
+            None
+        );
+        assert_eq!(
+            imported_user_display_name(Some(&json!("  "))).unwrap(),
+            None
+        );
+        assert_eq!(
+            imported_user_display_name(Some(&json!(" 张三 ")))
+                .unwrap()
+                .as_deref(),
+            Some("张三")
+        );
+        assert_eq!(
+            imported_user_display_name(Some(&json!("𠮷".repeat(100)))).unwrap(),
+            Some("𠮷".repeat(100))
+        );
+        for invalid in [
+            json!("\n张三"),
+            json!("张三\t"),
+            json!("中".repeat(101)),
+            json!(123),
+        ] {
+            assert!(imported_user_display_name(Some(&invalid)).is_err());
+        }
+    }
 
     use super::{
         build_imported_user_usage_total_aggregates, imported_api_key_id_for_mode,

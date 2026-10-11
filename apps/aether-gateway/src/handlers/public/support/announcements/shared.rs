@@ -95,6 +95,7 @@ pub(super) fn build_public_announcement_payload(
         "author": {
             "id": announcement.author_id,
             "username": announcement.author_username,
+            "display_name": announcement.author_display_name,
         },
         "start_time": format_optional_unix_datetime(announcement.start_time_unix_secs),
         "end_time": format_optional_unix_datetime(announcement.end_time_unix_secs),

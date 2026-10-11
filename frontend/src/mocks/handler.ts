@@ -1638,10 +1638,13 @@ const mockHandlers: Record<string, (config: AxiosRequestConfig) => Promise<Axios
   },
 
   // ========== Admin: 用户管理 ==========
-  'GET /api/admin/users': async () => {
+  'GET /api/admin/users': async (config) => {
     await delay()
     requireAdmin()
-    return createMockResponse(MOCK_ALL_USERS)
+    const keyword = String(config.params?.search || '').trim().toLowerCase()
+    return createMockResponse(keyword ? MOCK_ALL_USERS.filter(user =>
+      [user.username, user.display_name, user.email].some(value => value?.toLowerCase().includes(keyword)),
+    ) : MOCK_ALL_USERS)
   },
 
   'GET /api/admin/user-groups': async () => {
@@ -1660,6 +1663,7 @@ const mockHandlers: Record<string, (config: AxiosRequestConfig) => Promise<Axios
     const newUser = {
       id: `user-demo-${Date.now()}`,
       username: body.username,
+      display_name: typeof body.display_name === 'string' ? body.display_name.trim() || null : null,
       email: body.email,
       role: body.role || 'user',
       unlimited: Boolean(body.unlimited),
@@ -3782,7 +3786,16 @@ registerDynamicRoute('PATCH', '/api/admin/users/:userId', async (config, params)
     throw { response: createMockResponse({ detail: '用户不存在' }, 404) }
   }
   const body = JSON.parse(config.data || '{}')
-  return createMockResponse({ ...user, ...body })
+  const updatedUser = { ...user, ...body }
+  if (Object.prototype.hasOwnProperty.call(body, 'display_name')) {
+    updatedUser.display_name = typeof body.display_name === 'string' ? body.display_name.trim() || null : null
+  }
+  Object.assign(user, updatedUser)
+  // 按目标 ID 更新共享身份对象，切换账号后也能读取已维护的姓名。
+  for (const identity of [MOCK_ADMIN_USER, MOCK_NORMAL_USER, MOCK_ADMIN_PROFILE, MOCK_USER_PROFILE]) {
+    if (identity.id === user.id) identity.display_name = user.display_name
+  }
+  return createMockResponse(updatedUser)
 })
 
 // 用户删除

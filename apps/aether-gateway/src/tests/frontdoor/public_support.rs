@@ -5468,7 +5468,9 @@ async fn gateway_returns_service_unavailable_for_wallet_today_cost_without_usage
 #[tokio::test]
 async fn gateway_updates_users_me_detail_locally_without_proxying_upstream() {
     let now = Utc::now();
-    let user = sample_auth_user(now);
+    let user = sample_auth_user(now)
+        .with_display_name(Some("管理员姓名".into()))
+        .unwrap();
     let access_token = build_test_auth_token(
         "access",
         serde_json::Map::from_iter([
@@ -5499,6 +5501,21 @@ async fn gateway_updates_users_me_detail_locally_without_proxying_upstream() {
         )
         .await;
     let client = reqwest::Client::new();
+
+    for forbidden_name in [json!("冒充姓名"), json!(null), json!("")] {
+        let response = client
+            .put(format!("{gateway_url}/api/users/me"))
+            .header("authorization", format!("Bearer {access_token}"))
+            .header("x-client-device-id", "device-users-me-update-detail")
+            .header("user-agent", "AetherTest/1.0")
+            .json(&json!({"display_name": forbidden_name, "username": "must-not-change"}))
+            .send()
+            .await
+            .expect("request should succeed");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let payload: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(payload["detail"], "姓名只能由管理员修改");
+    }
 
     let unverified_response = client
         .put(format!("{gateway_url}/api/users/me"))
@@ -5558,6 +5575,7 @@ async fn gateway_updates_users_me_detail_locally_without_proxying_upstream() {
     let get_payload: serde_json::Value = get_response.json().await.expect("json body should parse");
     assert_eq!(get_payload["email"], "alice@example.com");
     assert_eq!(get_payload["username"], "alice-updated");
+    assert_eq!(get_payload["display_name"], "管理员姓名");
     assert_eq!(get_payload["auth_source"], "local");
     assert_eq!(get_payload["has_password"], true);
     assert_eq!(

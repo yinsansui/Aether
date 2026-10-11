@@ -34,6 +34,99 @@ fn sample_admin_user(user_id: &str) -> StoredUserAuthRecord {
     sample_admin_user_with_role(user_id, "user", "alice@example.com", "alice")
 }
 
+#[tokio::test]
+async fn gateway_admin_display_name_create_patch_and_selection_preserve_login_identity() {
+    let state = AppState::new()
+        .expect("gateway should build")
+        .with_auth_users_for_tests([sample_admin_user("name-user")])
+        .with_auth_wallets_for_tests(Vec::<StoredWalletSnapshot>::new());
+    let (gateway_url, gateway_handle) = start_server(build_router_with_state(state.clone())).await;
+    let client = reqwest::Client::new();
+    let original = state
+        .find_user_auth_by_id("name-user")
+        .await
+        .unwrap()
+        .unwrap();
+
+    for (patch, expected) in [
+        (json!({"display_name": "  张三  "}), Some("张三")),
+        (json!({}), Some("张三")),
+        (json!({"display_name": null}), None),
+        (json!({"display_name": "张三"}), Some("张三")),
+        (json!({"display_name": "  "}), None),
+        (json!({"display_name": "张三"}), Some("张三")),
+    ] {
+        let response = client
+            .put(format!("{gateway_url}/api/admin/users/name-user"))
+            .header(GATEWAY_HEADER, "rust-phase3b")
+            .header(TRUSTED_ADMIN_USER_ID_HEADER, "admin-user-123")
+            .header(TRUSTED_ADMIN_USER_ROLE_HEADER, "admin")
+            .header(TRUSTED_ADMIN_SESSION_ID_HEADER, "session-123")
+            .json(&patch)
+            .send()
+            .await
+            .unwrap();
+        let status = response.status();
+        let payload: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(status, StatusCode::OK, "{payload}");
+        let updated = state
+            .find_user_auth_by_id("name-user")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.display_name.as_deref(), expected);
+        assert_eq!(updated.username, original.username);
+        assert_eq!(updated.security_version, original.security_version);
+        assert_eq!(updated.password_hash, original.password_hash);
+    }
+
+    let response = client
+        .post(format!("{gateway_url}/api/admin/users"))
+        .header(GATEWAY_HEADER, "rust-phase3b")
+        .header(TRUSTED_ADMIN_USER_ID_HEADER, "admin-user-123")
+        .header(TRUSTED_ADMIN_USER_ROLE_HEADER, "admin")
+        .header(TRUSTED_ADMIN_SESSION_ID_HEADER, "session-123")
+        .json(&json!({"username": "zhangsan2", "display_name": "张三", "password": "NameTest123!"}))
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    let payload: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(status, StatusCode::OK, "{payload}");
+    let created = state
+        .find_user_auth_by_identifier("zhangsan2")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(created.display_name.as_deref(), Some("张三"));
+    assert!(state
+        .find_user_auth_by_identifier("张三")
+        .await
+        .unwrap()
+        .is_none());
+
+    let response = client
+        .post(format!("{gateway_url}/api/admin/users/resolve-selection"))
+        .header(GATEWAY_HEADER, "rust-phase3b")
+        .header(TRUSTED_ADMIN_USER_ID_HEADER, "admin-user-123")
+        .header(TRUSTED_ADMIN_USER_ROLE_HEADER, "admin")
+        .header(TRUSTED_ADMIN_SESSION_ID_HEADER, "session-123")
+        .json(&json!({"user_ids": ["name-user", created.id]}))
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    let payload: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(status, StatusCode::OK, "{payload}");
+    assert_eq!(payload["total"], 2);
+    assert!(payload["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|item| item["display_name"] == "张三"));
+    gateway_handle.abort();
+}
+
 fn sample_admin_user_with_role(
     user_id: &str,
     role: &str,

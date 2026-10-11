@@ -1,7 +1,7 @@
 use super::super::shared::{
-    build_admin_wallets_bad_request_response, parse_admin_wallets_limit,
-    parse_admin_wallets_offset, parse_admin_wallets_owner_type_filter,
-    wallet_owner_summary_from_fields,
+    admin_wallet_identity_name, build_admin_wallets_bad_request_response,
+    parse_admin_wallets_limit, parse_admin_wallets_offset, parse_admin_wallets_owner_type_filter,
+    resolve_admin_wallet_user_identities, wallet_owner_summary_from_fields,
 };
 use crate::handlers::admin::request::{AdminAppState, AdminRequestContext};
 use crate::handlers::admin::shared::{query_param_value, unix_secs_to_rfc3339};
@@ -40,14 +40,41 @@ pub(in super::super) async fn build_admin_wallet_ledger_response(
             offset,
         )
         .await?;
+    let users = resolve_admin_wallet_user_identities(
+        state,
+        ledger.iter().flat_map(|entry| {
+            [
+                (
+                    entry.wallet_user_id.as_deref(),
+                    entry.wallet_user_name.as_deref(),
+                ),
+                (entry.operator_id.as_deref(), entry.operator_name.as_deref()),
+            ]
+            .into_iter()
+        }),
+    )
+    .await?;
     let items = ledger
         .into_iter()
         .map(|entry| {
             let owner = wallet_owner_summary_from_fields(
                 entry.wallet_user_id.as_deref(),
-                entry.wallet_user_name.clone(),
+                admin_wallet_identity_name(
+                    entry.wallet_user_name.clone(),
+                    entry.wallet_user_id.as_deref(),
+                    &users,
+                ),
                 entry.wallet_api_key_id.as_deref(),
                 entry.api_key_name.clone(),
+            );
+            let operator = entry.operator_id.as_deref().and_then(|id| users.get(id));
+            let operator_email = entry
+                .operator_email
+                .or_else(|| operator.and_then(|(_, email)| email.clone()));
+            let operator_name = admin_wallet_identity_name(
+                entry.operator_name,
+                entry.operator_id.as_deref(),
+                &users,
             );
             json!({
                 "id": entry.id,
@@ -67,8 +94,8 @@ pub(in super::super) async fn build_admin_wallet_ledger_response(
                 "link_type": entry.link_type,
                 "link_id": entry.link_id,
                 "operator_id": entry.operator_id,
-                "operator_name": entry.operator_name,
-                "operator_email": entry.operator_email,
+                "operator_name": operator_name,
+                "operator_email": operator_email,
                 "description": entry.description,
                 "created_at": entry
                     .created_at_unix_ms

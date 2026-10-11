@@ -4,13 +4,13 @@ use std::sync::RwLock;
 use async_trait::async_trait;
 
 use super::{
-    is_valid_bcrypt_hash, last_oauth_unbind_denial, normalize_user_group_name,
-    BindUserOAuthLinkOutcome, BindUserOAuthLinkSessionExpectation, DeleteUserOAuthLinkOutcome,
-    LdapAuthUserProvisioningOutcome, ResolveOAuthLinkedUserOutcome, StoredUserAuthRecord,
-    StoredUserExportRow, StoredUserGroup, StoredUserGroupMember, StoredUserGroupMembership,
-    StoredUserOAuthLinkSummary, StoredUserPreferenceRecord, StoredUserSessionRecord,
-    StoredUserSummary, UpsertUserGroupRecord, UserExportListQuery, UserExportSortBy,
-    UserExportSummary, UserReadRepository, LAST_ACTIVE_ADMIN_DELETE_DENIED,
+    is_valid_bcrypt_hash, last_oauth_unbind_denial, normalize_user_display_name,
+    normalize_user_group_name, BindUserOAuthLinkOutcome, BindUserOAuthLinkSessionExpectation,
+    DeleteUserOAuthLinkOutcome, LdapAuthUserProvisioningOutcome, ResolveOAuthLinkedUserOutcome,
+    StoredUserAuthRecord, StoredUserExportRow, StoredUserGroup, StoredUserGroupMember,
+    StoredUserGroupMembership, StoredUserOAuthLinkSummary, StoredUserPreferenceRecord,
+    StoredUserSessionRecord, StoredUserSummary, UpsertUserGroupRecord, UserExportListQuery,
+    UserExportSortBy, UserExportSummary, UserReadRepository, LAST_ACTIVE_ADMIN_DELETE_DENIED,
     LAST_ACTIVE_ADMIN_UPDATE_DENIED,
 };
 use crate::DataLayerError;
@@ -354,6 +354,7 @@ fn memory_group_members(
                 group_id: candidate_group_id,
                 user_id: user.id.clone(),
                 username: user.username.clone(),
+                display_name: user.display_name.clone(),
                 email: user.email.clone(),
                 role: user.role.clone(),
                 is_active: user.is_active,
@@ -367,12 +368,21 @@ fn memory_group_members(
 fn filter_memory_export_rows(
     repository: &InMemoryUserReadRepository,
     query: &UserExportListQuery,
-) -> Vec<StoredUserExportRow> {
+) -> Result<Vec<StoredUserExportRow>, DataLayerError> {
     let mut rows = repository
         .export_rows
         .read()
         .expect("user repository lock")
         .clone();
+    if rows.is_empty() {
+        rows = repository
+            .auth_by_id
+            .read()
+            .expect("user repository lock")
+            .values()
+            .map(|user| memory_export_row_from_auth_user(repository, user))
+            .collect::<Result<Vec<_>, _>>()?;
+    }
     if let Some(role) = query.role.as_deref() {
         rows.retain(|row| row.role.eq_ignore_ascii_case(role));
     }
@@ -401,10 +411,14 @@ fn filter_memory_export_rows(
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        let search = search.to_ascii_lowercase();
+        let search = search.to_lowercase();
         rows.retain(|row| {
             row.id.to_ascii_lowercase().contains(&search)
-                || row.username.to_ascii_lowercase().contains(&search)
+                || (row.username.to_ascii_lowercase().contains(&search)
+                    || row
+                        .display_name
+                        .as_deref()
+                        .is_some_and(|name| name.to_lowercase().contains(&search)))
                 || row
                     .email
                     .as_deref()
@@ -441,7 +455,7 @@ fn filter_memory_export_rows(
             rows.sort_by(|left, right| left.id.cmp(&right.id));
         }
     }
-    rows
+    Ok(rows)
 }
 
 fn memory_export_row_from_auth_user(
@@ -477,6 +491,7 @@ fn memory_export_row_from_auth_user(
         model_capability_settings,
         user.is_active,
     )?
+    .with_display_name(user.display_name.clone())?
     .with_feature_settings(feature_settings)
     .with_policy_modes(
         user.allowed_providers_mode.clone(),
@@ -503,7 +518,7 @@ impl UserReadRepository for InMemoryUserReadRepository {
         &self,
         username_search: &str,
     ) -> Result<Vec<StoredUserSummary>, DataLayerError> {
-        let username_search = username_search.trim().to_ascii_lowercase();
+        let username_search = username_search.trim().to_lowercase();
         if username_search.is_empty() {
             return Ok(Vec::new());
         }
@@ -517,6 +532,14 @@ impl UserReadRepository for InMemoryUserReadRepository {
                 user.username
                     .to_ascii_lowercase()
                     .contains(&username_search)
+                    || user
+                        .display_name
+                        .as_deref()
+                        .is_some_and(|name| name.to_lowercase().contains(&username_search))
+                    || user
+                        .email
+                        .as_deref()
+                        .is_some_and(|email| email.to_lowercase().contains(&username_search))
             })
             .cloned()
             .collect())
@@ -561,7 +584,7 @@ impl UserReadRepository for InMemoryUserReadRepository {
         &self,
         query: &UserExportListQuery,
     ) -> Result<Vec<StoredUserExportRow>, DataLayerError> {
-        Ok(filter_memory_export_rows(self, query)
+        Ok(filter_memory_export_rows(self, query)?
             .into_iter()
             .skip(query.skip)
             .take(query.limit)
@@ -569,7 +592,7 @@ impl UserReadRepository for InMemoryUserReadRepository {
     }
 
     async fn count_export_users(&self, query: &UserExportListQuery) -> Result<u64, DataLayerError> {
-        Ok(filter_memory_export_rows(self, query).len() as u64)
+        Ok(filter_memory_export_rows(self, query)?.len() as u64)
     }
 
     async fn summarize_export_users(&self) -> Result<UserExportSummary, DataLayerError> {
@@ -1151,6 +1174,27 @@ impl UserReadRepository for InMemoryUserReadRepository {
         username: String,
         created_at: chrono::DateTime<chrono::Utc>,
     ) -> Result<Option<StoredUserAuthRecord>, DataLayerError> {
+        self.create_oauth_auth_user_with_display_name(
+            email,
+            email_verified,
+            username,
+            created_at,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn create_oauth_auth_user_with_display_name(
+        &self,
+        email: Option<String>,
+        email_verified: bool,
+        username: String,
+        created_at: chrono::DateTime<chrono::Utc>,
+        display_name: Option<String>,
+    ) -> Result<Option<StoredUserAuthRecord>, DataLayerError> {
+        // External profile defaults must never reject an otherwise valid login.
+        let display_name = normalize_user_display_name(display_name).ok().flatten();
         if self.read_only {
             return Ok(None);
         }
@@ -1176,7 +1220,8 @@ impl UserReadRepository for InMemoryUserReadRepository {
             "inherit".to_string(),
             "inherit".to_string(),
         )?;
-        self.insert_auth_user(user).map(Some)
+        self.insert_auth_user(user.with_display_name(display_name)?)
+            .map(Some)
     }
 
     async fn find_oauth_link_owner(
@@ -1439,6 +1484,27 @@ impl UserReadRepository for InMemoryUserReadRepository {
         ldap_username: Option<String>,
         logged_in_at: chrono::DateTime<chrono::Utc>,
     ) -> Result<Option<LdapAuthUserProvisioningOutcome>, DataLayerError> {
+        self.get_or_create_ldap_auth_user_with_display_name(
+            email,
+            username,
+            ldap_dn,
+            ldap_username,
+            logged_in_at,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn get_or_create_ldap_auth_user_with_display_name(
+        &self,
+        email: String,
+        username: String,
+        ldap_dn: Option<String>,
+        ldap_username: Option<String>,
+        logged_in_at: chrono::DateTime<chrono::Utc>,
+        display_name: Option<String>,
+    ) -> Result<Option<LdapAuthUserProvisioningOutcome>, DataLayerError> {
         if self.read_only {
             return Ok(None);
         }
@@ -1490,6 +1556,9 @@ impl UserReadRepository for InMemoryUserReadRepository {
             }));
         }
 
+        // Only first-time provisioning consumes the external name. Invalid optional
+        // profile data does not affect authentication or an administrator's name.
+        let display_name = normalize_user_display_name(display_name).ok().flatten();
         let base_username = ldap_username
             .as_deref()
             .filter(|value| !value.trim().is_empty())
@@ -1531,7 +1600,7 @@ impl UserReadRepository for InMemoryUserReadRepository {
                 Some(logged_in_at),
                 Some(logged_in_at),
             )?;
-            let user = self.insert_auth_user(user)?;
+            let user = self.insert_auth_user(user.with_display_name(display_name)?)?;
             upsert_memory_ldap_identifiers(self, &user.id, ldap_dn, ldap_username);
             return Ok(Some(LdapAuthUserProvisioningOutcome {
                 user,
@@ -1566,6 +1635,28 @@ impl UserReadRepository for InMemoryUserReadRepository {
         email_verified: Option<bool>,
         username: Option<String>,
     ) -> Result<Option<StoredUserAuthRecord>, DataLayerError> {
+        self.update_local_auth_user_profile_with_display_name(
+            user_id,
+            email_present,
+            email,
+            email_verified,
+            username,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn update_local_auth_user_profile_with_display_name(
+        &self,
+        user_id: &str,
+        email_present: bool,
+        email: Option<String>,
+        email_verified: Option<bool>,
+        username: Option<String>,
+        display_name: Option<Option<String>>,
+    ) -> Result<Option<StoredUserAuthRecord>, DataLayerError> {
+        let display_name = display_name.map(normalize_user_display_name).transpose()?;
         if self.read_only {
             return Ok(None);
         }
@@ -1585,6 +1676,9 @@ impl UserReadRepository for InMemoryUserReadRepository {
         }
         if let Some(username) = username {
             user.username = username;
+        }
+        if let Some(display_name) = display_name {
+            user.display_name = display_name;
         }
         let updated = user.clone();
         drop(auth_by_id);
@@ -1611,8 +1705,18 @@ impl UserReadRepository for InMemoryUserReadRepository {
         {
             summary.email = updated.email.clone();
             summary.username = updated.username.clone();
+            summary.display_name = updated.display_name.clone();
         }
 
+        if let Some(row) = self
+            .export_rows
+            .write()
+            .expect("user repository lock")
+            .iter_mut()
+            .find(|row| row.id == user_id)
+        {
+            row.display_name = updated.display_name.clone();
+        }
         Ok(Some(updated))
     }
 
@@ -1701,6 +1805,7 @@ impl UserReadRepository for InMemoryUserReadRepository {
         user.email = restored_auth.email.clone();
         user.email_verified = restored_auth.email_verified;
         user.username = restored_auth.username.clone();
+        user.display_name = restored_auth.display_name.clone();
         user.role = restored_auth.role.clone();
         user.allowed_providers = restored_auth.allowed_providers.clone();
         user.allowed_providers_mode = restored_auth.allowed_providers_mode.clone();
@@ -1738,6 +1843,7 @@ impl UserReadRepository for InMemoryUserReadRepository {
         {
             summary.email = updated.email.clone();
             summary.username = updated.username.clone();
+            summary.display_name = updated.display_name.clone();
             summary.role = updated.role.clone();
             summary.is_active = updated.is_active;
         }
@@ -1782,6 +1888,7 @@ impl UserReadRepository for InMemoryUserReadRepository {
             row.email = updated.email.clone();
             row.email_verified = updated.email_verified;
             row.username = updated.username.clone();
+            row.display_name = updated.display_name.clone();
             row.role = updated.role.clone();
             row.auth_source = updated.auth_source.clone();
             row.allowed_providers = updated.allowed_providers.clone();
@@ -2276,6 +2383,36 @@ impl UserReadRepository for InMemoryUserReadRepository {
         allowed_models: Option<Vec<String>>,
         _rate_limit: Option<i32>,
     ) -> Result<Option<StoredUserAuthRecord>, DataLayerError> {
+        self.create_local_auth_user_with_settings_and_display_name(
+            email,
+            email_verified,
+            username,
+            password_hash,
+            role,
+            allowed_providers,
+            allowed_api_formats,
+            allowed_models,
+            _rate_limit,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn create_local_auth_user_with_settings_and_display_name(
+        &self,
+        email: Option<String>,
+        email_verified: bool,
+        username: String,
+        password_hash: String,
+        role: String,
+        allowed_providers: Option<Vec<String>>,
+        allowed_api_formats: Option<Vec<String>>,
+        allowed_models: Option<Vec<String>>,
+        _rate_limit: Option<i32>,
+        display_name: Option<String>,
+    ) -> Result<Option<StoredUserAuthRecord>, DataLayerError> {
+        let display_name = normalize_user_display_name(display_name)?;
         if self.read_only {
             return Ok(None);
         }
@@ -2297,7 +2434,8 @@ impl UserReadRepository for InMemoryUserReadRepository {
             Some(now),
             None,
         )?;
-        self.insert_auth_user(user).map(Some)
+        self.insert_auth_user(user.with_display_name(display_name)?)
+            .map(Some)
     }
 
     async fn delete_local_auth_user(&self, user_id: &str) -> Result<bool, DataLayerError> {
@@ -2701,6 +2839,391 @@ mod tests {
 
     use super::*;
     use crate::repository::users::{UserExportListQuery, UserReadRepository};
+
+    async fn create_named_user(
+        repository: &InMemoryUserReadRepository,
+        username: &str,
+        name: Option<&str>,
+    ) -> StoredUserAuthRecord {
+        repository
+            .create_local_auth_user_with_settings_and_display_name(
+                Some(format!("{username}@example.com")),
+                false,
+                username.into(),
+                "password-hash".into(),
+                "user".into(),
+                None,
+                None,
+                None,
+                None,
+                name.map(str::to_string),
+            )
+            .await
+            .unwrap()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn display_name_unicode_case_search_matches_list_count_and_selector() {
+        let repository = InMemoryUserReadRepository::default();
+        let user = create_named_user(&repository, "elodie-account", Some("Élodie")).await;
+        for search in ["Élodie", "ÉLODIE", "élodie"] {
+            let query = UserExportListQuery {
+                search: Some(search.into()),
+                limit: 20,
+                ..Default::default()
+            };
+            let rows = repository.list_export_users_page(&query).await.unwrap();
+            assert_eq!(rows.len(), 1, "{search}");
+            assert_eq!(rows[0].id, user.id);
+            assert_eq!(repository.count_export_users(&query).await.unwrap(), 1);
+            let users = repository
+                .list_users_by_username_search(search)
+                .await
+                .unwrap();
+            assert_eq!(users.len(), 1, "{search}");
+            assert_eq!(users[0].id, user.id);
+        }
+    }
+
+    #[tokio::test]
+    async fn display_name_is_non_unique_profile_data_and_searchable_not_login_identifier() {
+        let repository = InMemoryUserReadRepository::default();
+        let first = create_named_user(&repository, "zhangsan", Some(" 张三 ")).await;
+        let second = create_named_user(&repository, "zhangsan2", Some("张三")).await;
+        assert_ne!(first.id, second.id);
+        assert_eq!(first.display_name.as_deref(), Some("张三"));
+        assert_eq!(
+            repository
+                .find_user_auth_by_identifier("zhangsan")
+                .await
+                .unwrap()
+                .unwrap()
+                .id,
+            first.id
+        );
+        assert!(repository
+            .find_user_auth_by_identifier("张三")
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            repository
+                .list_users_by_username_search("张三")
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            repository
+                .list_users_by_username_search("zhangsan@example.com")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        let query = UserExportListQuery {
+            search: Some("张三".into()),
+            limit: 10,
+            ..Default::default()
+        };
+        assert_eq!(
+            repository
+                .list_export_users_page(&query)
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(repository.count_export_users(&query).await.unwrap(), 2);
+
+        let unchanged = repository
+            .update_local_auth_user_profile(&first.id, false, None, None, None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(unchanged.display_name, first.display_name);
+        let updated = repository
+            .update_local_auth_user_profile_with_display_name(
+                &first.id,
+                false,
+                None,
+                None,
+                None,
+                Some(Some("李四".into())),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.security_version, first.security_version);
+        assert_eq!(updated.password_hash, first.password_hash);
+        assert_eq!(updated.username, first.username);
+        assert_eq!(
+            repository
+                .list_users_by_ids(std::slice::from_ref(&first.id))
+                .await
+                .unwrap()[0]
+                .display_name
+                .as_deref(),
+            Some("李四")
+        );
+        assert_eq!(
+            repository
+                .find_export_user_by_id(&first.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .display_name
+                .as_deref(),
+            Some("李四")
+        );
+        assert!(repository
+            .update_local_auth_user_profile_with_display_name(
+                &first.id,
+                true,
+                Some("wrong@example.com".into()),
+                None,
+                None,
+                Some(Some("错误\n姓名".into()))
+            )
+            .await
+            .is_err());
+        assert_eq!(
+            repository
+                .find_user_auth_by_id(&first.id)
+                .await
+                .unwrap()
+                .unwrap(),
+            updated
+        );
+        for clear in [None, Some("  ".into())] {
+            let cleared = repository
+                .update_local_auth_user_profile_with_display_name(
+                    &first.id,
+                    false,
+                    None,
+                    None,
+                    None,
+                    Some(clear),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(cleared.display_name, None);
+        }
+    }
+
+    #[tokio::test]
+    async fn display_name_external_defaults_do_not_overwrite_admin_profile() {
+        let repository = InMemoryUserReadRepository::default();
+        let now = chrono::Utc::now();
+        let outcome = repository
+            .get_or_create_ldap_auth_user_with_display_name(
+                "ldap@example.com".into(),
+                "ldap-account".into(),
+                Some("cn=ldap-test".into()),
+                Some("ldap-account".into()),
+                now,
+                Some("外部姓名".into()),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(outcome.created);
+        assert_eq!(outcome.user.display_name.as_deref(), Some("外部姓名"));
+        repository
+            .update_local_auth_user_profile_with_display_name(
+                &outcome.user.id,
+                false,
+                None,
+                None,
+                None,
+                Some(Some("管理员姓名".into())),
+            )
+            .await
+            .unwrap();
+        let existing = repository
+            .get_or_create_ldap_auth_user_with_display_name(
+                "ldap@example.com".into(),
+                "ldap-account".into(),
+                Some("cn=ldap-test".into()),
+                Some("ldap-account".into()),
+                now,
+                Some("新的外部姓名".into()),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!existing.created);
+        assert_eq!(existing.user.display_name.as_deref(), Some("管理员姓名"));
+        for invalid in ["中".repeat(101), "姓名\n控制符".into()] {
+            let existing = repository
+                .get_or_create_ldap_auth_user_with_display_name(
+                    "ldap@example.com".into(),
+                    "ldap-account".into(),
+                    Some("cn=ldap-test".into()),
+                    Some("ldap-account".into()),
+                    now,
+                    Some(invalid),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(!existing.created);
+            assert_eq!(existing.user.display_name.as_deref(), Some("管理员姓名"));
+        }
+        let oauth = repository
+            .create_oauth_auth_user_with_display_name(
+                Some("oauth@example.com".into()),
+                true,
+                "oauth-account".into(),
+                now,
+                Some("OAuth 姓名".into()),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        repository
+            .update_local_auth_user_profile_with_display_name(
+                &oauth.id,
+                false,
+                None,
+                None,
+                None,
+                Some(Some("OAuth 管理姓名".into())),
+            )
+            .await
+            .unwrap();
+        repository
+            .touch_auth_user_last_login(&oauth.id, now)
+            .await
+            .unwrap();
+        assert_eq!(
+            repository
+                .find_user_auth_by_id(&oauth.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .display_name
+                .as_deref(),
+            Some("OAuth 管理姓名")
+        );
+    }
+
+    #[tokio::test]
+    async fn display_name_invalid_external_defaults_do_not_prevent_new_accounts() {
+        let repository = InMemoryUserReadRepository::default();
+        let now = chrono::Utc::now();
+        for (index, invalid) in ["中".repeat(101), "姓名\n控制符".into()]
+            .into_iter()
+            .enumerate()
+        {
+            let ldap = repository
+                .get_or_create_ldap_auth_user_with_display_name(
+                    format!("ldap-invalid-{index}@example.com"),
+                    format!("ldap-invalid-{index}"),
+                    Some(format!("cn=invalid-{index}")),
+                    None,
+                    now,
+                    Some(invalid.clone()),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(ldap.created);
+            assert_eq!(ldap.user.display_name, None);
+            let oauth = repository
+                .create_oauth_auth_user_with_display_name(
+                    None,
+                    false,
+                    format!("oauth-invalid-{index}"),
+                    now,
+                    Some(invalid),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(oauth.display_name, None);
+        }
+    }
+
+    #[tokio::test]
+    async fn display_name_survives_export_legacy_deserialization_and_atomic_restore_cas() {
+        let repository = InMemoryUserReadRepository::default();
+        let before = create_named_user(&repository, "cas-name", Some("原姓名")).await;
+        let before_export = repository
+            .find_export_user_by_id(&before.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let serialized = serde_json::to_value(&before_export).unwrap();
+        assert_eq!(serialized["display_name"], "原姓名");
+        assert_eq!(
+            serde_json::from_value::<StoredUserExportRow>(serialized.clone()).unwrap(),
+            before_export
+        );
+        let mut legacy = serialized;
+        legacy.as_object_mut().unwrap().remove("display_name");
+        assert_eq!(
+            serde_json::from_value::<StoredUserExportRow>(legacy)
+                .unwrap()
+                .display_name,
+            None
+        );
+        let after = repository
+            .update_local_auth_user_profile_with_display_name(
+                &before.id,
+                false,
+                None,
+                None,
+                None,
+                Some(Some("导入姓名".into())),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let after_export = repository
+            .find_export_user_by_id(&before.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(repository
+            .restore_local_auth_user_state_if_matches(
+                &after,
+                &before,
+                &after_export,
+                &before_export,
+                None,
+                None,
+                None,
+                None
+            )
+            .await
+            .unwrap());
+        assert_eq!(
+            repository
+                .find_user_auth_by_id(&before.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .display_name,
+            before.display_name
+        );
+        assert!(!repository
+            .restore_local_auth_user_state_if_matches(
+                &after,
+                &before,
+                &after_export,
+                &before_export,
+                None,
+                None,
+                None,
+                None
+            )
+            .await
+            .unwrap());
+    }
 
     fn user_group_record(name: &str, priority: i32) -> UpsertUserGroupRecord {
         UpsertUserGroupRecord {

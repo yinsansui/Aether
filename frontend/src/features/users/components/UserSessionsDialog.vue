@@ -15,7 +15,7 @@
               {{ legacyT('登录设备') }}
             </h3>
             <p class="text-xs text-muted-foreground">
-              {{ legacyT('查看并强制下线该用户的设备会话') }}
+              {{ userName ? `${userName} · ` : '' }}{{ legacyT('查看并强制下线该用户的设备会话') }}
             </p>
           </div>
         </div>
@@ -97,6 +97,7 @@ import type { UserSession } from '@/api/users'
 
 defineProps<{
   open: boolean
+  userName?: string
   sessions: UserSession[]
   loading: boolean
   actionLoading: string | null

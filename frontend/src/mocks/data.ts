@@ -50,6 +50,7 @@ const MOCK_USER_BILLING = {
 export const MOCK_ADMIN_USER: User = {
   id: 'demo-admin-uuid-0001',
   username: 'Demo Admin',
+  display_name: '演示管理员',
   email: 'admin@demo.aether.io',
   role: 'admin',
   is_active: true,
@@ -64,6 +65,7 @@ export const MOCK_ADMIN_USER: User = {
 export const MOCK_NORMAL_USER: User = {
   id: 'demo-user-uuid-0002',
   username: 'Demo User',
+  display_name: '演示用户',
   email: 'user@demo.aether.io',
   role: 'user',
   is_active: true,
@@ -101,6 +103,7 @@ export const MOCK_ADMIN_PROFILE: Profile = {
   id: MOCK_ADMIN_USER.id ?? '',
   email: MOCK_ADMIN_USER.email ?? '',
   username: MOCK_ADMIN_USER.username,
+  display_name: MOCK_ADMIN_USER.display_name,
   role: 'admin',
   is_active: true,
   billing: MOCK_ADMIN_BILLING,
@@ -119,6 +122,7 @@ export const MOCK_USER_PROFILE: Profile = {
   id: MOCK_NORMAL_USER.id ?? '',
   email: MOCK_NORMAL_USER.email ?? '',
   username: MOCK_NORMAL_USER.username,
+  display_name: MOCK_NORMAL_USER.display_name,
   role: 'user',
   is_active: true,
   billing: MOCK_USER_BILLING,
@@ -296,6 +300,7 @@ export const MOCK_ALL_USERS: AdminUser[] = [
   {
     id: 'demo-admin-uuid-0001',
     username: 'Demo Admin',
+    display_name: MOCK_ADMIN_USER.display_name,
     email: 'admin@demo.aether.io',
     role: 'admin',
     unlimited: true,
@@ -308,6 +313,7 @@ export const MOCK_ALL_USERS: AdminUser[] = [
   {
     id: 'demo-user-uuid-0002',
     username: 'Demo User',
+    display_name: MOCK_NORMAL_USER.display_name,
     email: 'user@demo.aether.io',
     role: 'user',
     unlimited: false,

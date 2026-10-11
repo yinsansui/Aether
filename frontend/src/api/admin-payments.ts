@@ -81,6 +81,7 @@ export interface RedeemCodeRecord {
   status: string
   redeemed_by_user_id?: string | null
   redeemed_by_user_name?: string | null
+  redeemed_by_user_display_name?: string | null
   redeemed_wallet_id?: string | null
   redeemed_payment_order_id?: string | null
   redeemed_order_no?: string | null

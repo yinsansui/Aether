@@ -2,6 +2,40 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 
+/// A display name is profile data, never a unique login identifier.
+pub fn normalize_user_display_name(
+    value: Option<String>,
+) -> Result<Option<String>, crate::DataLayerError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.chars().any(char::is_control) {
+        return Err(crate::DataLayerError::InvalidInput(
+            "姓名不能包含控制字符".to_string(),
+        ));
+    }
+    let value = value.trim();
+    if value.chars().count() > 100 {
+        return Err(crate::DataLayerError::InvalidInput(
+            "姓名不能超过 100 个字符".to_string(),
+        ));
+    }
+    Ok((!value.is_empty()).then(|| value.to_string()))
+}
+
+/// 用户身份标签统一为“姓名（登录账号）”，供只返回展示文字的接口使用。
+pub fn format_user_identity_label(username: &str, display_name: Option<&str>) -> String {
+    let username = username.trim();
+    let display_name = display_name.map(str::trim).unwrap_or_default();
+    if display_name.is_empty() || display_name == username {
+        username.to_string()
+    } else if username.is_empty() {
+        display_name.to_string()
+    } else {
+        format!("{display_name}（{username}）")
+    }
+}
+
 fn redacted_optional_secret<T>(value: &Option<T>) -> Option<&'static str> {
     value.as_ref().map(|_| "[REDACTED]")
 }
@@ -21,6 +55,8 @@ pub fn is_last_active_admin_delete_denied(error: &crate::DataLayerError) -> bool
 pub struct StoredUserSummary {
     pub id: String,
     pub username: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
     pub email: Option<String>,
     pub role: String,
     pub is_active: bool,
@@ -54,11 +90,20 @@ impl StoredUserSummary {
         Ok(Self {
             id,
             username,
+            display_name: None,
             email,
             role,
             is_active,
             is_deleted,
         })
+    }
+
+    pub fn with_display_name(
+        mut self,
+        display_name: Option<String>,
+    ) -> Result<Self, crate::DataLayerError> {
+        self.display_name = normalize_user_display_name(display_name)?;
+        Ok(self)
     }
 }
 
@@ -68,6 +113,8 @@ pub struct StoredUserAuthRecord {
     pub email: Option<String>,
     pub email_verified: bool,
     pub username: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
     pub password_hash: Option<String>,
     pub role: String,
     pub auth_source: String,
@@ -93,6 +140,7 @@ impl std::fmt::Debug for StoredUserAuthRecord {
             .field("email", &self.email)
             .field("email_verified", &self.email_verified)
             .field("username", &self.username)
+            .field("display_name", &self.display_name)
             .field(
                 "password_hash",
                 &redacted_optional_secret(&self.password_hash),
@@ -158,6 +206,7 @@ impl StoredUserAuthRecord {
             email,
             email_verified,
             username,
+            display_name: None,
             password_hash,
             role,
             auth_source,
@@ -218,6 +267,7 @@ impl StoredUserAuthRecord {
             && self.email == expected.email
             && self.email_verified == expected.email_verified
             && self.username == expected.username
+            && self.display_name == expected.display_name
             && self.role == expected.role
             && self.auth_source == expected.auth_source
             && self.allowed_providers == expected.allowed_providers
@@ -245,7 +295,16 @@ impl StoredUserAuthRecord {
             self.role.clone(),
             self.is_active,
             self.is_deleted,
-        )
+        )?
+        .with_display_name(self.display_name.clone())
+    }
+
+    pub fn with_display_name(
+        mut self,
+        display_name: Option<String>,
+    ) -> Result<Self, crate::DataLayerError> {
+        self.display_name = normalize_user_display_name(display_name)?;
+        Ok(self)
     }
 }
 
@@ -426,6 +485,8 @@ pub struct StoredUserExportRow {
     pub email: Option<String>,
     pub email_verified: bool,
     pub username: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
     pub password_hash: Option<String>,
     pub role: String,
     pub auth_source: String,
@@ -450,6 +511,7 @@ impl std::fmt::Debug for StoredUserExportRow {
             .field("email", &self.email)
             .field("email_verified", &self.email_verified)
             .field("username", &self.username)
+            .field("display_name", &self.display_name)
             .field(
                 "password_hash",
                 &redacted_optional_secret(&self.password_hash),
@@ -514,6 +576,7 @@ impl StoredUserExportRow {
             email,
             email_verified,
             username,
+            display_name: None,
             password_hash,
             role,
             auth_source,
@@ -563,6 +626,7 @@ impl StoredUserExportRow {
             && self.email == expected.email
             && self.email_verified == expected.email_verified
             && self.username == expected.username
+            && self.display_name == expected.display_name
             && self.role == expected.role
             && self.auth_source == expected.auth_source
             && self.allowed_providers == expected.allowed_providers
@@ -589,6 +653,14 @@ impl StoredUserExportRow {
             "system".to_string()
         };
         self
+    }
+
+    pub fn with_display_name(
+        mut self,
+        display_name: Option<String>,
+    ) -> Result<Self, crate::DataLayerError> {
+        self.display_name = normalize_user_display_name(display_name)?;
+        Ok(self)
     }
 }
 
@@ -874,6 +946,8 @@ pub struct StoredUserGroupMember {
     pub group_id: String,
     pub user_id: String,
     pub username: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
     pub email: Option<String>,
     pub role: String,
     pub is_active: bool,
@@ -1180,6 +1254,18 @@ pub trait UserReadRepository: Send + Sync {
         created_at: DateTime<Utc>,
     ) -> Result<Option<StoredUserAuthRecord>, crate::DataLayerError>;
 
+    /// Use an optional external default only at creation; invalid profile data
+    /// is ignored so it cannot reject an otherwise valid OAuth identity.
+    #[allow(clippy::too_many_arguments)]
+    async fn create_oauth_auth_user_with_display_name(
+        &self,
+        email: Option<String>,
+        email_verified: bool,
+        username: String,
+        created_at: DateTime<Utc>,
+        display_name: Option<String>,
+    ) -> Result<Option<StoredUserAuthRecord>, crate::DataLayerError>;
+
     async fn find_oauth_link_owner(
         &self,
         provider_type: &str,
@@ -1273,6 +1359,19 @@ pub trait UserReadRepository: Send + Sync {
         logged_in_at: DateTime<Utc>,
     ) -> Result<Option<LdapAuthUserProvisioningOutcome>, crate::DataLayerError>;
 
+    /// Existing users retain their administrator-maintained name. First-time
+    /// provisioning ignores invalid optional external names.
+    #[allow(clippy::too_many_arguments)]
+    async fn get_or_create_ldap_auth_user_with_display_name(
+        &self,
+        email: String,
+        username: String,
+        ldap_dn: Option<String>,
+        ldap_username: Option<String>,
+        logged_in_at: DateTime<Utc>,
+        display_name: Option<String>,
+    ) -> Result<Option<LdapAuthUserProvisioningOutcome>, crate::DataLayerError>;
+
     async fn touch_auth_user_last_login(
         &self,
         user_id: &str,
@@ -1286,6 +1385,19 @@ pub trait UserReadRepository: Send + Sync {
         email: Option<String>,
         email_verified: Option<bool>,
         username: Option<String>,
+    ) -> Result<Option<StoredUserAuthRecord>, crate::DataLayerError>;
+
+    /// The outer option distinguishes omission from an explicit clear. Profile
+    /// writes do not change security_version or revoke authentication sessions.
+    #[allow(clippy::too_many_arguments)]
+    async fn update_local_auth_user_profile_with_display_name(
+        &self,
+        user_id: &str,
+        email_present: bool,
+        email: Option<String>,
+        email_verified: Option<bool>,
+        username: Option<String>,
+        display_name: Option<Option<String>>,
     ) -> Result<Option<StoredUserAuthRecord>, crate::DataLayerError>;
 
     /// Restore all user fields represented by an aggregate import checkpoint in
@@ -1415,6 +1527,21 @@ pub trait UserReadRepository: Send + Sync {
         allowed_api_formats: Option<Vec<String>>,
         allowed_models: Option<Vec<String>>,
         rate_limit: Option<i32>,
+    ) -> Result<Option<StoredUserAuthRecord>, crate::DataLayerError>;
+
+    #[allow(clippy::too_many_arguments)]
+    async fn create_local_auth_user_with_settings_and_display_name(
+        &self,
+        email: Option<String>,
+        email_verified: bool,
+        username: String,
+        password_hash: String,
+        role: String,
+        allowed_providers: Option<Vec<String>>,
+        allowed_api_formats: Option<Vec<String>>,
+        allowed_models: Option<Vec<String>>,
+        rate_limit: Option<i32>,
+        display_name: Option<String>,
     ) -> Result<Option<StoredUserAuthRecord>, crate::DataLayerError>;
 
     async fn delete_local_auth_user(&self, user_id: &str) -> Result<bool, crate::DataLayerError>;
@@ -1649,6 +1776,47 @@ mod tests {
         DeleteUserOAuthLinkOutcome, StoredUserAuthRecord, StoredUserExportRow,
         StoredUserPreferenceRecord, StoredUserSessionRecord,
     };
+
+    #[test]
+    fn user_identity_label_handles_names_and_missing_accounts_consistently() {
+        use super::format_user_identity_label;
+        for (username, display_name, expected) in [
+            ("zhangsan", Some(" 张三 "), "张三（zhangsan）"),
+            (" zhangsan ", Some(" 张三 "), "张三（zhangsan）"),
+            ("login", None, "login"),
+            ("login", Some("   "), "login"),
+            (" login ", Some("login"), "login"),
+            ("", Some("张三"), "张三"),
+            ("   ", Some("   "), ""),
+        ] {
+            assert_eq!(format_user_identity_label(username, display_name), expected);
+        }
+    }
+
+    #[test]
+    fn display_name_supports_unicode_and_rejects_invalid_content() {
+        use super::normalize_user_display_name;
+        assert_eq!(
+            normalize_user_display_name(Some("  张 三·测试  ".into())).unwrap(),
+            Some("张 三·测试".into())
+        );
+        assert_eq!(normalize_user_display_name(None).unwrap(), None);
+        assert_eq!(
+            normalize_user_display_name(Some("　 ".into())).unwrap(),
+            None
+        );
+        assert_eq!(
+            normalize_user_display_name(Some("中".repeat(100))).unwrap(),
+            Some("中".repeat(100))
+        );
+        assert!(normalize_user_display_name(Some("中".repeat(101))).is_err());
+        for invalid in ["张\n三", "\t张三", "张三\u{007f}", "\u{0000}"] {
+            assert!(
+                normalize_user_display_name(Some(invalid.into())).is_err(),
+                "{invalid:?}"
+            );
+        }
+    }
 
     #[test]
     fn classifies_last_oauth_unbind_by_remaining_login_method() {

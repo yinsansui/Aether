@@ -3,7 +3,9 @@ use crate::handlers::admin::shared::unix_secs_to_rfc3339;
 use crate::handlers::shared::round_to;
 use crate::GatewayError;
 use aether_data::repository::wallet::stored_timestamp_unix_secs;
+use aether_data_contracts::repository::users::format_user_identity_label;
 use serde_json::{json, Map, Value};
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone)]
 pub(in super::super) struct AdminWalletOwnerSummary {
@@ -36,7 +38,8 @@ pub(in super::super) fn build_admin_wallet_payment_order_payload(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(in super::super) fn build_admin_wallet_transaction_payload(
+pub(in super::super) async fn build_admin_wallet_transaction_payload(
+    state: &AdminAppState<'_>,
     wallet: &aether_data::repository::wallet::StoredWalletSnapshot,
     owner: &AdminWalletOwnerSummary,
     transaction_id: String,
@@ -54,8 +57,10 @@ pub(in super::super) fn build_admin_wallet_transaction_payload(
     operator_id: Option<&str>,
     description: Option<&str>,
     created_at: Option<String>,
-) -> serde_json::Value {
-    json!({
+) -> Result<serde_json::Value, GatewayError> {
+    let operators = resolve_admin_wallet_user_identities(state, [(operator_id, None)]).await?;
+    let operator = operator_id.and_then(|id| operators.get(id));
+    Ok(json!({
         "id": transaction_id,
         "wallet_id": wallet.id,
         "owner_type": owner.owner_type,
@@ -73,10 +78,49 @@ pub(in super::super) fn build_admin_wallet_transaction_payload(
         "link_type": link_type,
         "link_id": link_id,
         "operator_id": operator_id,
-        "operator_name": serde_json::Value::Null,
-        "operator_email": serde_json::Value::Null,
+        "operator_name": operator.map(|(label, _)| label),
+        "operator_email": operator.and_then(|(_, email)| email.as_deref()),
         "description": description,
         "created_at": created_at,
+    }))
+}
+
+pub(in super::super) async fn resolve_admin_wallet_user_identities<'a>(
+    state: &AdminAppState<'_>,
+    identities: impl IntoIterator<Item = (Option<&'a str>, Option<&'a str>)>,
+) -> Result<BTreeMap<String, (String, Option<String>)>, GatewayError> {
+    let user_ids = identities
+        .into_iter()
+        .filter(|(_, name)| name.is_none_or(|name| name.trim().is_empty()))
+        .filter_map(|(user_id, _)| user_id)
+        .map(ToOwned::to_owned)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    if user_ids.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    Ok(state
+        .resolve_auth_user_summaries_by_ids(&user_ids)
+        .await?
+        .into_values()
+        .map(|user| {
+            let label = format_user_identity_label(&user.username, user.display_name.as_deref());
+            (user.id, (label, user.email))
+        })
+        .collect())
+}
+
+/// Joined DTO names are already formatted; only fill absent identities.
+pub(in super::super) fn admin_wallet_identity_name(
+    name: Option<String>,
+    user_id: Option<&str>,
+    users: &BTreeMap<String, (String, Option<String>)>,
+) -> Option<String> {
+    name.filter(|name| !name.trim().is_empty()).or_else(|| {
+        user_id
+            .and_then(|id| users.get(id))
+            .map(|(label, _)| label.clone())
     })
 }
 
@@ -111,10 +155,10 @@ pub(in super::super) async fn resolve_admin_wallet_owner_summary(
     wallet: &aether_data::repository::wallet::StoredWalletSnapshot,
 ) -> Result<AdminWalletOwnerSummary, GatewayError> {
     if let Some(user_id) = wallet.user_id.as_deref() {
-        let user = state.find_user_auth_by_id(user_id).await?;
+        let users = resolve_admin_wallet_user_identities(state, [(Some(user_id), None)]).await?;
         Ok(AdminWalletOwnerSummary {
             owner_type: "user",
-            owner_name: user.map(|record| record.username),
+            owner_name: admin_wallet_identity_name(None, Some(user_id), &users),
         })
     } else if let Some(api_key_id) = wallet.api_key_id.as_deref() {
         let api_key_ids = vec![api_key_id.to_string()];
@@ -374,8 +418,88 @@ pub(in super::super) fn build_admin_wallet_refund_payload(
 
 #[cfg(test)]
 mod tests {
-    use super::admin_wallet_payout_proof_projection;
+    use super::{
+        admin_wallet_identity_name, admin_wallet_payout_proof_projection,
+        resolve_admin_wallet_user_identities,
+    };
+    use crate::handlers::admin::request::AdminAppState;
+    use crate::{data::GatewayDataState, AppState};
+    use aether_data::repository::users::{InMemoryUserReadRepository, StoredUserAuthRecord};
+    use aether_data::repository::wallet::InMemoryWalletRepository;
     use serde_json::json;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn wallet_identity_enrichment_preserves_joined_names_and_only_resolves_missing_users() {
+        let user = StoredUserAuthRecord::new(
+            "user-1".into(),
+            Some("user@example.com".into()),
+            true,
+            "alice".into(),
+            Some("hash".into()),
+            "user".into(),
+            "local".into(),
+            None,
+            None,
+            None,
+            true,
+            false,
+            None,
+            None,
+        )
+        .unwrap()
+        .with_display_name(Some("张三".into()))
+        .unwrap();
+        let mut overlay_user = user.clone();
+        overlay_user.username = "overlay-account".into();
+        overlay_user.display_name = Some("overlay name".into());
+        overlay_user.email = Some("overlay@example.com".into());
+        let mut overlay_only_user = overlay_user.clone();
+        overlay_only_user.id = "deleted-user".into();
+        let state = AppState::new()
+            .unwrap()
+            .with_data_state_for_tests(GatewayDataState::with_user_and_wallet_for_tests(
+                Arc::new(InMemoryUserReadRepository::seed_auth_users(vec![user])),
+                Arc::new(InMemoryWalletRepository::default()),
+            ))
+            .with_auth_users_for_tests([overlay_user, overlay_only_user]);
+        let state = AdminAppState::new(&state);
+        let joined_name = "查询姓名（joined-account）";
+        let identities = resolve_admin_wallet_user_identities(
+            &state,
+            [
+                (Some("joined-user"), Some(joined_name)),
+                (Some("user-1"), None),
+                (Some("user-1"), Some(" ")),
+                (Some("deleted-user"), None),
+                (None, None),
+            ],
+        )
+        .await
+        .unwrap();
+        assert_eq!(identities.len(), 1);
+        assert_eq!(identities["user-1"].0, "张三（alice）");
+        assert_eq!(identities["user-1"].1.as_deref(), Some("user@example.com"));
+        assert_eq!(
+            admin_wallet_identity_name(Some(joined_name.into()), Some("user-1"), &identities)
+                .as_deref(),
+            Some(joined_name),
+        );
+        assert_eq!(
+            admin_wallet_identity_name(Some(" ".into()), Some("user-1"), &identities).as_deref(),
+            Some("张三（alice）"),
+        );
+        assert_eq!(
+            admin_wallet_identity_name(None, Some("deleted-user"), &identities),
+            None
+        );
+
+        let joined_only =
+            resolve_admin_wallet_user_identities(&state, [(Some("user-1"), Some("张三（alice）"))])
+                .await
+                .unwrap();
+        assert!(joined_only.is_empty());
+    }
 
     #[test]
     fn admin_refund_proof_projection_removes_historical_gateway_payloads() {

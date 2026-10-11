@@ -1394,56 +1394,115 @@ pub fn admin_usage_record_json(
     let user_email = user
         .and_then(|value| value.email.clone())
         .unwrap_or_else(|| "已删除用户".to_string());
+    let user_display_name = user.and_then(|value| value.display_name.clone());
     let client_is_stream = admin_usage_client_is_stream(item);
     let upstream_is_stream = admin_usage_upstream_is_stream(item);
-
-    let mut payload = json!({
-        "id": item.id,
-        "user_id": item.user_id,
-        "user_email": user_email,
-        "username": username,
-        "api_key": item.api_key_id.as_ref().map(|api_key_id| json!({
+    let api_key = item.api_key_id.as_ref().map(|api_key_id| {
+        json!({
             "id": api_key_id,
             "name": api_key_name.clone(),
             "display": api_key_name.clone().unwrap_or_else(|| api_key_id.clone()),
-        })),
-        "provider": item.provider_name,
-        "model": item.model,
-        "target_model": item.target_model,
-        "input_tokens": item.input_tokens,
-        "effective_input_tokens": admin_usage_effective_input_tokens(item),
-        "output_tokens": item.output_tokens,
-        "cache_creation_input_tokens": cache_creation_input_tokens,
-        "cache_creation_ephemeral_5m_input_tokens": item.cache_creation_ephemeral_5m_input_tokens,
-        "cache_creation_ephemeral_1h_input_tokens": item.cache_creation_ephemeral_1h_input_tokens,
-        "cache_read_input_tokens": item.cache_read_input_tokens,
-        "total_tokens": admin_usage_total_tokens(item),
-        "cost": round_to(item.total_cost_usd, 6),
-        "actual_cost": round_to(item.actual_total_cost_usd, 6),
-        "rate_multiplier": rate_multiplier,
-        "response_time_ms": item.response_time_ms,
-        "first_byte_time_ms": item.first_byte_time_ms,
-        "created_at": unix_secs_to_rfc3339(item.created_at_unix_ms),
-        "updated_at": unix_secs_to_rfc3339(item.updated_at_unix_secs),
-        "input_price_per_1m": input_price_per_1m,
-        "output_price_per_1m": output_price_per_1m,
-        "cache_creation_price_per_1m": cache_creation_price_per_1m,
-        "cache_read_price_per_1m": cache_read_price_per_1m,
-        "status_code": item.status_code,
-        "error_message": admin_usage_safe_error_message(item),
-        "status": item.status,
-        "request_type": item.request_type,
-        "has_fallback": admin_usage_has_fallback(item),
-        "has_retry": false,
-        "has_rectified": false,
-        "is_free_tier": is_free_tier,
-        "api_format": item.api_format,
-        "endpoint_api_format": item.endpoint_api_format,
-        "has_format_conversion": item.has_format_conversion,
-        "api_key_name": api_key_name,
-        "provider_key_name": provider_key_name,
-        "model_version": Value::Null,
+        })
     });
+
+    let mut payload = Value::Object(serde_json::Map::from_iter([
+        ("id".to_string(), json!(item.id)),
+        ("user_id".to_string(), json!(item.user_id)),
+        ("user_email".to_string(), json!(user_email)),
+        ("username".to_string(), json!(username)),
+        ("display_name".to_string(), json!(user_display_name)),
+        ("api_key".to_string(), json!(api_key)),
+        ("provider".to_string(), json!(item.provider_name)),
+        ("model".to_string(), json!(item.model)),
+        ("target_model".to_string(), json!(item.target_model)),
+        (
+            "input_tokens".to_string(),
+            json!(item.input_tokens),
+        ),
+        (
+            "effective_input_tokens".to_string(),
+            json!(admin_usage_effective_input_tokens(item)),
+        ),
+        ("output_tokens".to_string(), json!(item.output_tokens)),
+        (
+            "cache_creation_input_tokens".to_string(),
+            json!(cache_creation_input_tokens),
+        ),
+        (
+            "cache_creation_ephemeral_5m_input_tokens".to_string(),
+            json!(item.cache_creation_ephemeral_5m_input_tokens),
+        ),
+        (
+            "cache_creation_ephemeral_1h_input_tokens".to_string(),
+            json!(item.cache_creation_ephemeral_1h_input_tokens),
+        ),
+        (
+            "cache_read_input_tokens".to_string(),
+            json!(item.cache_read_input_tokens),
+        ),
+        (
+            "total_tokens".to_string(),
+            json!(admin_usage_total_tokens(item)),
+        ),
+        ("cost".to_string(), json!(round_to(item.total_cost_usd, 6))),
+        (
+            "actual_cost".to_string(),
+            json!(round_to(item.actual_total_cost_usd, 6)),
+        ),
+        ("rate_multiplier".to_string(), json!(rate_multiplier)),
+        ("response_time_ms".to_string(), json!(item.response_time_ms)),
+        ("first_byte_time_ms".to_string(), json!(item.first_byte_time_ms)),
+        (
+            "created_at".to_string(),
+            json!(unix_secs_to_rfc3339(item.created_at_unix_ms)),
+        ),
+        (
+            "updated_at".to_string(),
+            json!(unix_secs_to_rfc3339(item.updated_at_unix_secs)),
+        ),
+        (
+            "input_price_per_1m".to_string(),
+            json!(input_price_per_1m),
+        ),
+        (
+            "output_price_per_1m".to_string(),
+            json!(output_price_per_1m),
+        ),
+        (
+            "cache_creation_price_per_1m".to_string(),
+            json!(cache_creation_price_per_1m),
+        ),
+        (
+            "cache_read_price_per_1m".to_string(),
+            json!(cache_read_price_per_1m),
+        ),
+        ("status_code".to_string(), json!(item.status_code)),
+        (
+            "error_message".to_string(),
+            json!(admin_usage_safe_error_message(item)),
+        ),
+        ("status".to_string(), json!(item.status)),
+        ("request_type".to_string(), json!(item.request_type)),
+        (
+            "has_fallback".to_string(),
+            json!(admin_usage_has_fallback(item)),
+        ),
+        ("has_retry".to_string(), json!(false)),
+        ("has_rectified".to_string(), json!(false)),
+        ("is_free_tier".to_string(), json!(is_free_tier)),
+        ("api_format".to_string(), json!(item.api_format)),
+        (
+            "endpoint_api_format".to_string(),
+            json!(item.endpoint_api_format),
+        ),
+        (
+            "has_format_conversion".to_string(),
+            json!(item.has_format_conversion),
+        ),
+        ("api_key_name".to_string(), json!(api_key_name)),
+        ("provider_key_name".to_string(), json!(provider_key_name)),
+        ("model_version".to_string(), Value::Null),
+    ]));
     let object = payload
         .as_object_mut()
         .expect("admin usage record payload should be an object");
@@ -2601,6 +2660,7 @@ pub fn build_admin_usage_detail_payload(
             "id": user_id,
             "email": payload["user_email"].clone(),
             "username": payload["username"].clone(),
+            "display_name": payload["display_name"].clone(),
         }),
         None => Value::Null,
     };

@@ -25,6 +25,7 @@ pub struct StoredAdminAuditLog {
     pub user_id: Option<String>,
     pub user_email: Option<String>,
     pub user_username: Option<String>,
+    pub user_display_name: Option<String>,
     pub description: Option<String>,
     pub ip_address: Option<String>,
     pub status_code: Option<i32>,

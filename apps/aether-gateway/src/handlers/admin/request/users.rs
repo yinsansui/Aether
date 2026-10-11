@@ -241,8 +241,37 @@ impl<'a> AdminAppState<'a> {
         allowed_models: Option<Vec<String>>,
         rate_limit: Option<i32>,
     ) -> Result<Option<aether_data::repository::users::StoredUserAuthRecord>, GatewayError> {
+        self.create_local_auth_user_with_settings_and_display_name(
+            email,
+            email_verified,
+            username,
+            password_hash,
+            role,
+            allowed_providers,
+            allowed_api_formats,
+            allowed_models,
+            rate_limit,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn create_local_auth_user_with_settings_and_display_name(
+        &self,
+        email: Option<String>,
+        email_verified: bool,
+        username: String,
+        password_hash: String,
+        role: String,
+        allowed_providers: Option<Vec<String>>,
+        allowed_api_formats: Option<Vec<String>>,
+        allowed_models: Option<Vec<String>>,
+        rate_limit: Option<i32>,
+        display_name: Option<String>,
+    ) -> Result<Option<aether_data::repository::users::StoredUserAuthRecord>, GatewayError> {
         self.app
-            .create_local_auth_user_with_settings(
+            .create_local_auth_user_with_settings_and_display_name(
                 email,
                 email_verified,
                 username,
@@ -252,6 +281,7 @@ impl<'a> AdminAppState<'a> {
                 allowed_api_formats,
                 allowed_models,
                 rate_limit,
+                display_name,
             )
             .await
     }
@@ -341,8 +371,36 @@ impl<'a> AdminAppState<'a> {
         email_verified: Option<bool>,
         username: Option<String>,
     ) -> Result<Option<aether_data::repository::users::StoredUserAuthRecord>, GatewayError> {
+        self.update_local_auth_user_profile_with_display_name(
+            user_id,
+            email_present,
+            email,
+            email_verified,
+            username,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn update_local_auth_user_profile_with_display_name(
+        &self,
+        user_id: &str,
+        email_present: bool,
+        email: Option<String>,
+        email_verified: Option<bool>,
+        username: Option<String>,
+        display_name: Option<Option<String>>,
+    ) -> Result<Option<aether_data::repository::users::StoredUserAuthRecord>, GatewayError> {
         self.app
-            .update_local_auth_user_profile(user_id, email_present, email, email_verified, username)
+            .update_local_auth_user_profile_with_display_name(
+                user_id,
+                email_present,
+                email,
+                email_verified,
+                username,
+                display_name,
+            )
             .await
     }
 

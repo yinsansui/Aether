@@ -41,7 +41,7 @@
             <Label
               for="form-username"
               class="text-sm font-medium"
-            >{{ legacyT('用户名') }} <span class="text-muted-foreground">*</span></Label>
+            >{{ legacyT('登录账号') }} <span class="text-muted-foreground">*</span></Label>
             <Input
               id="form-username"
               v-model="form.username"
@@ -87,6 +87,34 @@
               </Select>
             </div>
           </div>
+        </div>
+
+        <div class="space-y-2">
+          <Label
+            for="form-display-name"
+            class="text-sm font-medium"
+          >{{ legacyT('姓名') }}</Label>
+          <Input
+            id="form-display-name"
+            v-model="form.display_name"
+            type="text"
+            autocomplete="off"
+            class="h-10"
+            :class="nameError ? 'border-destructive' : ''"
+            :placeholder="legacyT('可选，支持中文姓名')"
+          />
+          <p
+            v-if="nameError"
+            class="text-xs text-destructive"
+          >
+            {{ legacyT(nameError) }}
+          </p>
+          <p
+            v-else
+            class="text-xs text-muted-foreground"
+          >
+            {{ legacyT('用于页面展示，不影响登录账号；留空显示登录账号') }}
+          </p>
         </div>
 
         <div class="space-y-2">
@@ -296,10 +324,12 @@ import {
   type PasswordPolicyLevel,
 } from '@/utils/passwordPolicy'
 import type { UserGroup, UserRole } from '@/api/users'
+import { displayNameError, normalizeDisplayName } from '@/utils/userIdentity'
 
 export interface UserFormData {
   id?: string
   username: string
+  display_name?: string | null
   email: string
   initial_gift_usd?: number | null
   unlimited?: boolean
@@ -328,6 +358,7 @@ const passwordPolicyLevel = ref<PasswordPolicyLevel>('weak')
 // 表单数据
 const form = ref({
   username: '',
+  display_name: '',
   password: '',
   confirmPassword: '',
   email: '',
@@ -355,6 +386,7 @@ function resetForm() {
   formNonce.value = createFieldNonce()
   form.value = {
     username: '',
+    display_name: '',
     password: '',
     confirmPassword: '',
     email: '',
@@ -377,6 +409,7 @@ function loadUserData() {
   // 创建数组副本，避免与 props 数据共享引用
   form.value = {
     username: props.user.username,
+    display_name: props.user.display_name ?? '',
     password: '',
     confirmPassword: '',
     email: props.user.email || '',
@@ -413,6 +446,7 @@ const usernameError = computed(() => {
 })
 
 const passwordHint = computed(() => getPasswordPolicyHint(passwordPolicyLevel.value))
+const nameError = computed(() => displayNameError(form.value.display_name))
 
 const passwordError = computed(() => {
   if (!form.value.password) {
@@ -436,7 +470,7 @@ const isFormValid = computed(() => {
   const initialGiftValid = isEditMode.value ||
     form.value.unlimited ||
     (typeof form.value.initial_gift_usd === 'number' && form.value.initial_gift_usd >= 0.01)
-  return hasUsername && usernameValid && passwordValid && passwordConfirmed && initialGiftValid
+  return hasUsername && usernameValid && !nameError.value && passwordValid && passwordConfirmed && initialGiftValid
 })
 
 
@@ -454,6 +488,7 @@ async function loadPasswordPolicy(): Promise<void> {
 
 // 提交表单
 async function handleSubmit() {
+  if (!isFormValid.value) return
   saving.value = true
   try {
     const data: UserFormData & { password?: string; unlimited: boolean } = {
@@ -463,6 +498,11 @@ async function handleSubmit() {
       role: form.value.role,
       group_ids: [...form.value.group_ids],
       feature_settings: buildFeatureSettingsPayload(),
+    }
+
+    const displayName = normalizeDisplayName(form.value.display_name)
+    if (!isEditMode.value || displayName !== normalizeDisplayName(props.user?.display_name ?? '')) {
+      data.display_name = displayName
     }
 
     if (isEditMode.value && props.user?.id) {

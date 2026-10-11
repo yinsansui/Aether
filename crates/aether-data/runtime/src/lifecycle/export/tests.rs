@@ -15,6 +15,54 @@ use crate::lifecycle::migrate::run_migrations as run_postgres_migrations;
 use crate::DatabaseDriver;
 
 #[test]
+fn display_name_backup_import_preserves_omission_and_validates_unicode() {
+    let columns = BTreeMap::from([
+        (
+            "id".to_string(),
+            postgres_column("character varying", "varchar"),
+        ),
+        (
+            "display_name".to_string(),
+            postgres_column("character varying", "varchar"),
+        ),
+    ]);
+    let normalize = |payload| {
+        normalize_postgres_import_payload(
+            "public.users",
+            ExportDomain::Users,
+            &ExportRow {
+                id: "name-test".into(),
+                payload,
+            },
+            &columns,
+        )
+    };
+    assert!(!normalize(json!({"id": "name-test"}))
+        .unwrap()
+        .contains_key("display_name"));
+    assert_eq!(
+        normalize(json!({"id": "name-test", "display_name": " 张三 "})).unwrap()["display_name"],
+        "张三"
+    );
+    assert!(
+        normalize(json!({"id": "name-test", "display_name": "　 "})).unwrap()["display_name"]
+            .is_null()
+    );
+    assert!(
+        normalize(json!({"id": "name-test", "display_name": null})).unwrap()["display_name"]
+            .is_null()
+    );
+    assert_eq!(
+        normalize(json!({"id": "name-test", "display_name": "𠮷".repeat(100)})).unwrap()
+            ["display_name"],
+        "𠮷".repeat(100)
+    );
+    for name in [json!("中".repeat(101)), json!("张\n三"), json!(42)] {
+        assert!(normalize(json!({"id": "name-test", "display_name": name})).is_err());
+    }
+}
+
+#[test]
 fn jsonl_round_trips_manifest_and_domain_rows() {
     let records = vec![
         DataExportRecord::manifest(DataExportManifest::new(

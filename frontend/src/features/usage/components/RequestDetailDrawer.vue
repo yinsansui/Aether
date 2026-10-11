@@ -137,7 +137,7 @@
               <span class="hidden opacity-40 sm:inline">|</span>
               <span>{{ formatApiFormat(detail.api_format) }}</span>
               <span class="hidden opacity-40 sm:inline">|</span>
-              <span>用户: {{ detail.user?.username || 'Unknown' }}</span>
+              <span>用户: {{ userIdentityLabel(detail.user) || 'Unknown' }}</span>
             </div>
           </div>
 
@@ -900,6 +900,7 @@
 </template>
 
 <script setup lang="ts">
+import { userIdentityLabel } from '@/utils/userIdentity'
 import { getI18nLocale } from '@/i18n'
 import { ref, shallowRef, watch, computed, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import axios from 'axios'

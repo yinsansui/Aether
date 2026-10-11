@@ -1,6 +1,7 @@
 use super::super::shared::{
-    build_admin_wallets_bad_request_response, enrich_admin_wallet_package_summary,
-    parse_admin_wallets_limit, parse_admin_wallets_offset, parse_admin_wallets_owner_type_filter,
+    admin_wallet_identity_name, build_admin_wallets_bad_request_response,
+    enrich_admin_wallet_package_summary, parse_admin_wallets_limit, parse_admin_wallets_offset,
+    parse_admin_wallets_owner_type_filter, resolve_admin_wallet_user_identities,
     wallet_owner_summary_from_fields,
 };
 use crate::handlers::admin::request::{AdminAppState, AdminRequestContext};
@@ -33,11 +34,18 @@ pub(in super::super) async fn build_admin_wallet_list_response(
     let (wallets, total) = state
         .list_admin_wallets(status.as_deref(), owner_type.as_deref(), limit, offset)
         .await?;
+    let users = resolve_admin_wallet_user_identities(
+        state,
+        wallets
+            .iter()
+            .map(|wallet| (wallet.user_id.as_deref(), wallet.user_name.as_deref())),
+    )
+    .await?;
     let mut items = Vec::with_capacity(wallets.len());
     for wallet in wallets {
         let owner = wallet_owner_summary_from_fields(
             wallet.user_id.as_deref(),
-            wallet.user_name.clone(),
+            admin_wallet_identity_name(wallet.user_name.clone(), wallet.user_id.as_deref(), &users),
             wallet.api_key_id.as_deref(),
             wallet.api_key_name.clone(),
         );

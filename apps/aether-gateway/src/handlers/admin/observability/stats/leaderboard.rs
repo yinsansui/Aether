@@ -1,6 +1,7 @@
 use crate::handlers::admin::request::AdminAppState;
 use crate::GatewayError;
 use aether_data_contracts::repository::usage::StoredRequestUsageAudit;
+use aether_data_contracts::repository::users::format_user_identity_label;
 
 pub(super) use aether_admin::observability::stats::{
     build_admin_stats_leaderboard_response, build_api_key_leaderboard_items,
@@ -19,10 +20,11 @@ pub(super) async fn load_user_leaderboard_metadata(
 
     if state.has_user_data_reader() {
         for user in state.list_users_by_ids(user_ids).await? {
-            let name = if !user.username.trim().is_empty() {
-                user.username
+            let name = format_user_identity_label(&user.username, user.display_name.as_deref());
+            let name = if name.is_empty() {
+                user.email.clone().unwrap_or_else(|| user.id.clone())
             } else {
-                user.email.unwrap_or(user.id.clone())
+                name
             };
             metadata.insert(
                 user.id,
@@ -43,10 +45,11 @@ pub(super) async fn load_user_leaderboard_metadata(
         let Some(user) = state.find_user_auth_by_id(user_id).await? else {
             continue;
         };
-        let name = if !user.username.trim().is_empty() {
-            user.username.clone()
-        } else {
+        let name = format_user_identity_label(&user.username, user.display_name.as_deref());
+        let name = if name.is_empty() {
             user.email.clone().unwrap_or_else(|| user.id.clone())
+        } else {
+            name
         };
         metadata.insert(
             user.id.clone(),

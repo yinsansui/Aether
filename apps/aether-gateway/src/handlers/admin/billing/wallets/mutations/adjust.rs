@@ -83,6 +83,7 @@ pub(in super::super) async fn build_admin_wallet_adjust_response(
     let wallet_payload =
         build_admin_wallet_summary_payload_with_package(state, &wallet, &owner).await?;
     let transaction_payload = build_admin_wallet_transaction_payload(
+        state,
         &wallet,
         &owner,
         transaction.id,
@@ -100,7 +101,8 @@ pub(in super::super) async fn build_admin_wallet_adjust_response(
         transaction.operator_id.as_deref(),
         transaction.description.as_deref(),
         unix_secs_to_rfc3339(stored_timestamp_unix_secs(transaction.created_at_unix_ms)),
-    );
+    )
+    .await?;
     let response = Json(json!({
         "wallet": wallet_payload,
         "transaction": transaction_payload,

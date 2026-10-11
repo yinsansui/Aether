@@ -65,6 +65,7 @@
 </template>
 
 <script setup lang="ts">
+import { userIdentityLabel } from '@/utils/userIdentity'
 import { computed, ref, watch } from 'vue'
 import {
   Button,
@@ -129,7 +130,7 @@ const form = ref<UserGroupFormState>(createEmptyForm())
 
 const selectedGroup = computed(() => groups.value.find((group) => group.id === editingGroupId.value) ?? null)
 const userOptions = computed(() => dialogUsers.value.map((user) => ({
-  label: `${user.username}${user.email ? ` (${user.email})` : ''}`,
+  label: `${userIdentityLabel(user)}${user.email ? ` · ${user.email}` : ''}`,
   value: user.id,
 })))
 

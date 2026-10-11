@@ -86,6 +86,21 @@ afterEach(() => {
 })
 
 describe('ServerUserSelector', () => {
+  it('keeps Chinese names and login accounts visible while selecting by user id', async () => {
+    getAllUsersMock.mockResolvedValue([
+      { id: 'user-1', username: 'zhangsan', display_name: '张三', email: 'zhangsan@example.com' },
+    ])
+    const onSelect = vi.fn()
+    const root = mountSelector({ onSelect })
+    root.querySelector('button')?.click()
+    await nextTick()
+    await flushPromises()
+    const target = Array.from(root.querySelectorAll('button')).find(button => button.textContent?.includes('张三（zhangsan）'))!
+    expect(target).toBeTruthy()
+    target.click()
+    expect(onSelect).toHaveBeenCalledWith('user-1')
+  })
+
   it('loads the initial user batch when opened', async () => {
     getAllUsersMock.mockResolvedValue([
       { id: 'user-1', username: 'alice', email: 'alice@example.com' },

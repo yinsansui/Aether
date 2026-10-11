@@ -134,6 +134,8 @@ pub struct StoredAdminWalletListItem {
     pub total_consumed: f64,
     pub total_refunded: f64,
     pub total_adjusted: f64,
+    /// Current formatted user identity label, never a raw username snapshot.
+    /// Backends without a user join leave this absent for batch summary enrichment.
     pub user_name: Option<String>,
     pub api_key_name: Option<String>,
     pub created_at_unix_ms: Option<u64>,
@@ -171,10 +173,14 @@ pub struct StoredAdminWalletLedgerItem {
     pub link_type: Option<String>,
     pub link_id: Option<String>,
     pub operator_id: Option<String>,
+    /// Current formatted user identity label, never a raw username snapshot.
+    /// Backends without a user join leave this absent for batch summary enrichment.
     pub operator_name: Option<String>,
     pub operator_email: Option<String>,
     pub description: Option<String>,
     pub wallet_user_id: Option<String>,
+    /// Current formatted user identity label, never a raw username snapshot.
+    /// Backends without a user join leave this absent for batch summary enrichment.
     pub wallet_user_name: Option<String>,
     pub wallet_api_key_id: Option<String>,
     pub api_key_name: Option<String>,
@@ -217,6 +223,8 @@ pub struct StoredAdminWalletRefundRequestItem {
     pub approved_by: Option<String>,
     pub processed_by: Option<String>,
     pub wallet_user_id: Option<String>,
+    /// Current formatted user identity label, never a raw username snapshot.
+    /// Backends without a user join leave this absent for batch summary enrichment.
     pub wallet_user_name: Option<String>,
     pub wallet_api_key_id: Option<String>,
     pub api_key_name: Option<String>,
@@ -249,6 +257,8 @@ pub struct StoredAdminWalletTransaction {
     pub link_type: Option<String>,
     pub link_id: Option<String>,
     pub operator_id: Option<String>,
+    /// Current formatted user identity label, never a raw username snapshot.
+    /// Backends without a user join leave this absent for batch summary enrichment.
     pub operator_name: Option<String>,
     pub operator_email: Option<String>,
     pub description: Option<String>,
@@ -611,6 +621,7 @@ pub struct StoredAdminRedeemCode {
     pub status: String,
     pub redeemed_by_user_id: Option<String>,
     pub redeemed_by_user_name: Option<String>,
+    pub redeemed_by_user_display_name: Option<String>,
     pub redeemed_wallet_id: Option<String>,
     pub redeemed_payment_order_id: Option<String>,
     pub redeemed_order_no: Option<String>,

@@ -134,20 +134,22 @@ pub(super) async fn build_admin_usage_cache_affinity_ttl_analysis_response(
             }
         }
 
-        let (username, email) = if group_by_api_key {
-            (Value::Null, Value::Null)
+        let (username, display_name, email) = if group_by_api_key {
+            (Value::Null, Value::Null, Value::Null)
         } else if let Some(user) = user_map.get(&group_id) {
             (
                 json!(user.username.clone()),
+                json!(user.display_name.clone()),
                 json!(user.email.clone().unwrap_or_default()),
             )
         } else {
-            (Value::Null, Value::Null)
+            (Value::Null, Value::Null, Value::Null)
         };
 
         users.push(json!({
             "group_id": group_id,
             "username": username,
+            "display_name": display_name,
             "email": email,
             "request_count": request_count,
             "interval_distribution": {

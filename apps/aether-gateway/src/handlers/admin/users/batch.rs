@@ -62,6 +62,7 @@ struct NormalizedAdminUserSelectionFilters {
 struct AdminUserSelectionItem {
     user_id: String,
     username: String,
+    display_name: Option<String>,
     email: Option<String>,
     role: String,
     is_active: bool,
@@ -377,6 +378,7 @@ async fn resolve_admin_user_selection(
                         &mut items_by_id,
                         user.id.clone(),
                         user.username.clone(),
+                        user.display_name.clone(),
                         user.email.clone(),
                         user.role.clone(),
                         user.is_active,
@@ -400,6 +402,7 @@ async fn resolve_admin_user_selection(
                 &mut items_by_id,
                 member.user_id,
                 member.username,
+                member.display_name,
                 member.email,
                 member.role,
                 member.is_active,
@@ -450,6 +453,7 @@ async fn resolve_admin_user_selection(
                 &mut items_by_id,
                 user.id,
                 user.username,
+                user.display_name,
                 user.email,
                 user.role,
                 user.is_active,
@@ -477,6 +481,7 @@ fn insert_or_update_selection_item(
     items_by_id: &mut BTreeMap<String, AdminUserSelectionItem>,
     user_id: String,
     username: String,
+    display_name: Option<String>,
     email: Option<String>,
     role: String,
     is_active: bool,
@@ -494,6 +499,7 @@ fn insert_or_update_selection_item(
                 AdminUserSelectionItem {
                     user_id,
                     username,
+                    display_name,
                     email,
                     role,
                     is_active,
@@ -557,13 +563,14 @@ fn admin_user_matches_filters(
     }
     if let Some(search) = filters.search.as_deref() {
         let searchable_text = format!(
-            "{} {}",
+            "{} {} {}",
             user.username,
+            user.display_name.as_deref().unwrap_or_default(),
             user.email.as_deref().unwrap_or_default()
         )
-        .to_ascii_lowercase();
+        .to_lowercase();
         let keywords = search
-            .to_ascii_lowercase()
+            .to_lowercase()
             .split_whitespace()
             .map(ToOwned::to_owned)
             .collect::<Vec<_>>();

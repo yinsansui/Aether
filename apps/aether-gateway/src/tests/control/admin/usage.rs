@@ -3563,7 +3563,9 @@ async fn gateway_handles_admin_usage_cache_affinity_interval_timeline_with_auth_
             .with_data_state_for_tests(GatewayDataState::with_usage_reader_for_tests(
                 usage_repository,
             ))
-            .with_auth_users_for_tests([sample_auth_user("user-1", "fresh-alice", "user", true)]),
+            .with_auth_users_for_tests([sample_auth_user("user-1", "fresh-alice", "user", true)
+                .with_display_name(Some("张三".to_string()))
+                .expect("display name should be valid")]),
     );
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
@@ -3578,7 +3580,7 @@ async fn gateway_handles_admin_usage_cache_affinity_interval_timeline_with_auth_
     let payload: serde_json::Value = response.json().await.expect("json body should parse");
     assert_eq!(payload["total_points"], 1);
     assert_eq!(payload["points"][0]["user_id"], "user-1");
-    assert_eq!(payload["users"]["user-1"], "fresh-alice");
+    assert_eq!(payload["users"]["user-1"], "张三（fresh-alice）");
     assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
 
     gateway_handle.abort();
@@ -3710,6 +3712,7 @@ async fn gateway_handles_admin_usage_cache_affinity_interval_timeline_with_legac
                 email: None,
                 email_verified: false,
                 username: " ".to_string(),
+                display_name: None,
                 password_hash: None,
                 role: "user".to_string(),
                 auth_source: "local".to_string(),

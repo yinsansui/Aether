@@ -27,6 +27,7 @@ export interface ManagementToken {
     id: string
     email: string
     username: string
+    display_name?: string | null
     role: string
   }
 }

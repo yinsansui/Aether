@@ -12,6 +12,7 @@ use crate::handlers::admin::shared::{
 };
 use crate::GatewayError;
 use aether_data_contracts::repository::provider_catalog::StoredProviderCatalogKey;
+use aether_data_contracts::repository::users::StoredUserSummary;
 use axum::body::Body;
 use axum::http::{self, Response};
 use axum::response::IntoResponse;
@@ -71,10 +72,10 @@ async fn admin_gemini_files_key_name_map(
         .collect())
 }
 
-async fn admin_gemini_files_username_map<'a, I>(
+async fn admin_gemini_files_user_map<'a, I>(
     state: &AdminAppState<'_>,
     mappings: I,
-) -> Result<BTreeMap<String, String>, GatewayError>
+) -> Result<BTreeMap<String, StoredUserSummary>, GatewayError>
 where
     I: Iterator<Item = &'a aether_data::repository::gemini_file_mappings::StoredGeminiFileMapping>,
 {
@@ -86,7 +87,7 @@ where
     let users = state.list_users_by_ids(&user_ids).await?;
     Ok(users
         .into_iter()
-        .map(|user| (user.id, user.username))
+        .map(|user| (user.id.clone(), user))
         .collect())
 }
 
@@ -128,7 +129,7 @@ async fn admin_gemini_files_all_keys(
 fn build_admin_gemini_file_mapping_payload(
     mapping: &aether_data::repository::gemini_file_mappings::StoredGeminiFileMapping,
     key_name: Option<&str>,
-    username: Option<&str>,
+    user: Option<&StoredUserSummary>,
     now_unix_secs: u64,
 ) -> serde_json::Value {
     json!({
@@ -137,7 +138,8 @@ fn build_admin_gemini_file_mapping_payload(
         "key_id": mapping.key_id,
         "key_name": key_name,
         "user_id": mapping.user_id,
-        "username": username,
+        "username": user.map(|user| user.username.as_str()),
+        "user_display_name": user.and_then(|user| user.display_name.as_deref()),
         "display_name": mapping.display_name,
         "mime_type": mapping.mime_type,
         "created_at": unix_secs_to_rfc3339(mapping.created_at_unix_ms),
@@ -183,8 +185,7 @@ pub(super) async fn maybe_build_local_admin_gemini_files_read_response(
                 )
                 .await?;
             let key_name_by_id = admin_gemini_files_key_name_map(state).await?;
-            let username_by_id =
-                admin_gemini_files_username_map(state, mappings.items.iter()).await?;
+            let user_by_id = admin_gemini_files_user_map(state, mappings.items.iter()).await?;
             let items = mappings
                 .items
                 .iter()
@@ -194,9 +195,7 @@ pub(super) async fn maybe_build_local_admin_gemini_files_read_response(
                         key_name_by_id
                             .get(mapping.key_id.as_str())
                             .map(String::as_str),
-                        username_by_id
-                            .get(mapping.user_id.as_deref().unwrap_or(""))
-                            .map(String::as_str),
+                        user_by_id.get(mapping.user_id.as_deref().unwrap_or("")),
                         now_unix_secs,
                     )
                 })
@@ -301,5 +300,46 @@ pub(super) async fn maybe_build_local_admin_gemini_files_read_response(
             Ok(Some(Json(capable_keys).into_response()))
         }
         _ => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_admin_gemini_file_mapping_payload;
+    use aether_data_contracts::repository::{
+        gemini_file_mappings::StoredGeminiFileMapping, users::StoredUserSummary,
+    };
+
+    #[test]
+    fn file_display_name_is_separate_from_user_display_name() {
+        let mut mapping = StoredGeminiFileMapping::new(
+            "mapping-1".into(),
+            "files/report".into(),
+            "key-1".into(),
+            1,
+            100,
+        )
+        .unwrap();
+        mapping.user_id = Some("user-1".into());
+        mapping.display_name = Some("报告.pdf".into());
+        let user = StoredUserSummary::new(
+            "user-1".into(),
+            "zhangsan".into(),
+            None,
+            "user".into(),
+            true,
+            false,
+        )
+        .unwrap()
+        .with_display_name(Some("张三".into()))
+        .unwrap();
+        let payload = build_admin_gemini_file_mapping_payload(&mapping, None, Some(&user), 10);
+        assert_eq!(payload["display_name"], "报告.pdf");
+        assert_eq!(payload["username"], "zhangsan");
+        assert_eq!(payload["user_display_name"], "张三");
+        let payload = build_admin_gemini_file_mapping_payload(&mapping, None, None, 10);
+        assert_eq!(payload["display_name"], "报告.pdf");
+        assert!(payload["username"].is_null());
+        assert!(payload["user_display_name"].is_null());
     }
 }

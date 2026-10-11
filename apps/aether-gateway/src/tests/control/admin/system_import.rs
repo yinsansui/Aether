@@ -1723,7 +1723,9 @@ async fn gateway_user_import_preserves_omitted_email_in_simulated_state_impl() {
         Some(chrono::Utc::now()),
         None,
     )
-    .expect("existing user should build");
+    .expect("existing user should build")
+    .with_display_name(Some("既有姓名".into()))
+    .unwrap();
     let auth_repository = Arc::new(InMemoryAuthApiKeySnapshotRepository::default());
     let user_repository =
         Arc::new(aether_data::repository::users::InMemoryUserReadRepository::default());
@@ -1776,6 +1778,35 @@ async fn gateway_user_import_preserves_omitted_email_in_simulated_state_impl() {
         .expect("existing email should remain attached");
     assert_eq!(updated.id, "user-existing");
     assert_eq!(updated.username, "renamed");
+    assert_eq!(updated.display_name.as_deref(), Some("既有姓名"));
+
+    for (name, expected) in [
+        (json!(" 导入姓名 "), Some("导入姓名")),
+        (json!(null), None),
+        (json!("  "), None),
+    ] {
+        let response = reqwest::Client::new()
+            .post(format!("{gateway_url}/api/admin/system/users/import"))
+            .header(GATEWAY_HEADER, "rust-phase3b")
+            .header(TRUSTED_ADMIN_USER_ID_HEADER, "admin-user-123")
+            .header(TRUSTED_ADMIN_USER_ROLE_HEADER, "admin")
+            .header(TRUSTED_ADMIN_SESSION_ID_HEADER, "session-123")
+            .json(&json!({
+                "version": "1.5", "merge_mode": "overwrite",
+                "users": [{"username": "renamed", "display_name": name, "role": "user", "is_active": true, "api_keys": []}],
+                "standalone_keys": []
+            }))
+            .send().await.unwrap();
+        let status = response.status();
+        let payload: Value = response.json().await.unwrap();
+        assert_eq!(status, StatusCode::OK, "{payload}");
+        let updated = state
+            .find_user_auth_by_id("user-existing")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.display_name.as_deref(), expected);
+    }
 
     gateway_handle.abort();
 }

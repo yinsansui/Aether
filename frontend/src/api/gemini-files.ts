@@ -11,6 +11,7 @@ export interface FileMappingResponse {
   key_name: string | null
   user_id: string | null
   username: string | null
+  user_display_name?: string | null
   display_name: string | null
   mime_type: string | null
   created_at: string

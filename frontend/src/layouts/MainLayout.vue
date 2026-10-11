@@ -135,15 +135,18 @@
               >
                 <div
                   class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-black/5 bg-[#f0f0eb] text-xs font-bold text-[#3d3929] dark:bg-white/10 dark:text-[#d4a27f]"
-                  :title="sidebarCollapsed ? authStore.user?.username : undefined"
+                  :title="sidebarCollapsed ? userIdentityLabel(authStore.user) : undefined"
                 >
-                  {{ authStore.user?.username?.substring(0, 2).toUpperCase() }}
+                  {{ userAvatarText(authStore.user) }}
                 </div>
                 <div
                   v-if="!sidebarCollapsed"
                   class="flex min-w-0 flex-col"
                 >
-                  <span class="truncate text-xs font-semibold leading-none text-foreground opacity-90">{{ authStore.user?.username }}</span>
+                  <span
+                    class="truncate text-xs font-semibold leading-none text-foreground opacity-90"
+                    :title="userIdentityLabel(authStore.user)"
+                  >{{ userIdentityLabel(authStore.user) }}</span>
                   <span class="mt-1.5 text-[10px] leading-none text-muted-foreground opacity-50">{{ currentRoleLabel }}</span>
                 </div>
               </div>
@@ -306,10 +309,13 @@
                 <div class="flex items-center justify-between">
                   <div class="flex items-center gap-3 min-w-0">
                     <div class="w-8 h-8 rounded-full bg-[#f0f0eb] dark:bg-white/10 border border-black/5 flex items-center justify-center text-xs font-bold text-[#3d3929] dark:text-[#d4a27f] shrink-0">
-                      {{ authStore.user?.username?.substring(0, 2).toUpperCase() }}
+                      {{ userAvatarText(authStore.user) }}
                     </div>
                     <div class="flex flex-col min-w-0">
-                      <span class="text-sm font-semibold leading-none truncate text-[#191919] dark:text-white">{{ authStore.user?.username }}</span>
+                      <span
+                        class="text-sm font-semibold leading-none truncate text-[#191919] dark:text-white"
+                        :title="userIdentityLabel(authStore.user)"
+                      >{{ userIdentityLabel(authStore.user) }}</span>
                       <span class="text-[10px] text-[#91918d] dark:text-muted-foreground leading-none mt-1">{{ currentRoleLabel }}</span>
                     </div>
                   </div>
@@ -490,6 +496,7 @@
 </template>
 
 <script setup lang="ts">
+import { userAvatarText, userIdentityLabel } from '@/utils/userIdentity'
 import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
 import { useLocalStorage } from '@vueuse/core'
 import { useRoute, useRouter } from 'vue-router'

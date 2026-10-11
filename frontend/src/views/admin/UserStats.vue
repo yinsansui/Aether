@@ -26,7 +26,7 @@
               :key="user.id"
               :value="user.id"
             >
-              {{ user.username || user.email }}
+              {{ userIdentityLabel(user) || user.email }}
             </SelectItem>
           </SelectContent>
         </Select>
@@ -45,7 +45,7 @@
               :key="`compare-${user.id}`"
               :value="user.id"
             >
-              {{ user.username || user.email }}
+              {{ userIdentityLabel(user) || user.email }}
             </SelectItem>
           </SelectContent>
         </Select>
@@ -144,6 +144,7 @@
 </template>
 
 <script setup lang="ts">
+import { userIdentityLabel } from '@/utils/userIdentity'
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { Card, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui'
 import LineChart from '@/components/charts/LineChart.vue'

@@ -190,10 +190,10 @@
                     {{ entry.user_email || `用户 ${entry.user_id}` }}
                   </span>
                   <span
-                    v-if="entry.user_username"
+                    v-if="entry.user_display_name || entry.user_username"
                     class="text-xs text-muted-foreground"
                   >
-                    {{ entry.user_username }}
+                    {{ userIdentityLabel({ username: entry.user_username, display_name: entry.user_display_name }) }}
                   </span>
                 </div>
                 <span
@@ -279,7 +279,7 @@
               v-if="logItem.user_id"
               class="text-sm"
             >
-              {{ logItem.user_email || `用户 ${logItem.user_id}` }}
+              {{ userIdentityLabel({ username: logItem.user_username, display_name: logItem.user_display_name }) || logItem.user_email || `用户 ${logItem.user_id}` }}
             </div>
             <div
               class="text-xs text-muted-foreground truncate"
@@ -365,10 +365,10 @@
                   {{ selectedLog.user_email || `用户 ${selectedLog.user_id}` }}
                 </p>
                 <p
-                  v-if="selectedLog.user_username"
+                  v-if="selectedLog.user_display_name || selectedLog.user_username"
                   class="text-muted-foreground"
                 >
-                  {{ selectedLog.user_username }}
+                  {{ userIdentityLabel({ username: selectedLog.user_username, display_name: selectedLog.user_display_name }) }}
                 </p>
                 <p class="text-xs text-muted-foreground">
                   ID: {{ selectedLog.user_id }}
@@ -409,6 +409,8 @@
 </template>
 
 <script setup lang="ts">
+import { userIdentityLabel } from '@/utils/userIdentity'
+import { serializeCsv } from '@/utils/csv'
 import { getI18nLocale } from '@/i18n'
 import { ref, onMounted, onBeforeUnmount, computed } from 'vue'
 import {
@@ -457,6 +459,7 @@ interface AuditLog {
   user_id?: number
   user_email?: string
   user_username?: string
+  user_display_name?: string | null
   description: string
   ip_address?: string
   status_code?: number
@@ -618,20 +621,21 @@ async function exportLogs() {
       }
     }
 
-    const csvContent = [
-      ['时间', '用户邮箱', '用户名', '用户ID', '事件类型', '描述', 'IP地址', '状态码', '错误消息'].join(','),
+    const csvContent = serializeCsv([
+      ['时间', '用户邮箱', '用户姓名', '登录账号', '用户ID', '事件类型', '描述', 'IP地址', '状态码', '错误消息'],
       ...allLogs.map((log: AuditLog) => [
         log.created_at,
-        `"${log.user_email || ''}"`,
-        `"${log.user_username || ''}"`,
-        log.user_id || '',
+        log.user_email,
+        log.user_display_name,
+        log.user_username,
+        log.user_id,
         log.event_type,
-        `"${log.description || ''}"`,
-        log.ip_address || '',
-        log.status_code || '',
-        `"${log.error_message || ''}"`
-      ].join(','))
-    ].join('\n')
+        log.description,
+        log.ip_address,
+        log.status_code,
+        log.error_message
+      ])
+    ])
 
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
     const link = document.createElement('a')

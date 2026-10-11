@@ -16,6 +16,14 @@ impl<'a> ReferralDataState<'a> {
     }
 }
 
+#[cfg(feature = "postgres")]
+const REFERRAL_RELATIONSHIP_FILTER_SQL: &str = r#"
+WHERE ($1 = '' OR LOWER(COALESCE(inviter.username, '')) LIKE LOWER($1) ESCAPE '!' OR LOWER(COALESCE(inviter.display_name, '')) LIKE LOWER($1) ESCAPE '!' OR LOWER(r.inviter_user_id) LIKE LOWER($1) ESCAPE '!')
+  AND ($2 = '' OR LOWER(COALESCE(invitee.username, '')) LIKE LOWER($2) ESCAPE '!' OR LOWER(COALESCE(invitee.display_name, '')) LIKE LOWER($2) ESCAPE '!' OR LOWER(r.invitee_user_id) LIKE LOWER($2) ESCAPE '!')
+  AND ($3 = '' OR LOWER(r.invite_code_snapshot) LIKE $3 ESCAPE '!')
+  AND ($4 < 0 OR ($4 = 1 AND r.first_paid_order_id IS NOT NULL) OR ($4 = 0 AND r.first_paid_order_id IS NULL))
+"#;
+
 const REFERRAL_RECONCILIATION_LIMIT: usize = 200;
 
 // The list tests intentionally build one page larger than the historical
@@ -37,8 +45,10 @@ pub struct ReferralRelationshipRecord {
     pub id: String,
     pub inviter_user_id: String,
     pub inviter_username: Option<String>,
+    pub inviter_display_name: Option<String>,
     pub invitee_user_id: String,
     pub invitee_username: Option<String>,
+    pub invitee_display_name: Option<String>,
     pub invite_code_snapshot: String,
     pub first_paid_order_id: Option<String>,
     pub first_paid_at_unix_secs: Option<u64>,
@@ -186,8 +196,10 @@ macro_rules! relationship_from_row {
             id: row_string!($row, "id"),
             inviter_user_id: row_string!($row, "inviter_user_id"),
             inviter_username: row_optional_string!($row, "inviter_username"),
+            inviter_display_name: row_optional_string!($row, "inviter_display_name"),
             invitee_user_id: row_string!($row, "invitee_user_id"),
             invitee_username: row_optional_string!($row, "invitee_username"),
+            invitee_display_name: row_optional_string!($row, "invitee_display_name"),
             invite_code_snapshot: row_string!($row, "invite_code_snapshot"),
             first_paid_order_id: row_optional_string!($row, "first_paid_order_id"),
             first_paid_at_unix_secs: row_optional_unix_secs($row, "first_paid_at_unix_secs")?,
@@ -1285,33 +1297,33 @@ ON CONFLICT (invitee_user_id) DO NOTHING
         let (limit, offset) = referral_page_bounds(query.limit, query.offset);
         #[cfg(feature = "postgres")]
         if let Some(backend) = backends.postgres() {
-            let count = sqlx::query(
+            let count_sql = format!(
                 r#"
 SELECT COUNT(*) AS total
 FROM user_referrals r
 LEFT JOIN users inviter ON inviter.id = r.inviter_user_id
 LEFT JOIN users invitee ON invitee.id = r.invitee_user_id
-WHERE ($1 = '' OR LOWER(COALESCE(inviter.username, '')) LIKE $1 ESCAPE '!' OR LOWER(r.inviter_user_id) LIKE $1 ESCAPE '!')
-  AND ($2 = '' OR LOWER(COALESCE(invitee.username, '')) LIKE $2 ESCAPE '!' OR LOWER(r.invitee_user_id) LIKE $2 ESCAPE '!')
-  AND ($3 = '' OR LOWER(r.invite_code_snapshot) LIKE $3 ESCAPE '!')
-  AND ($4 < 0 OR ($4 = 1 AND r.first_paid_order_id IS NOT NULL) OR ($4 = 0 AND r.first_paid_order_id IS NULL))
+{REFERRAL_RELATIONSHIP_FILTER_SQL}
 "#,
-            )
-            .bind(&inviter_pattern)
-            .bind(&invitee_pattern)
-            .bind(&invite_code_pattern)
-            .bind(first_paid)
-            .fetch_one(&backend.pool_clone())
-            .await
-            .map_err(DataLayerError::postgres)?;
+            );
+            let count = sqlx::query(&count_sql)
+                .bind(&inviter_pattern)
+                .bind(&invitee_pattern)
+                .bind(&invite_code_pattern)
+                .bind(first_paid)
+                .fetch_one(&backend.pool_clone())
+                .await
+                .map_err(DataLayerError::postgres)?;
             let total = count
                 .try_get::<i64, _>("total")
                 .map_err(DataLayerError::postgres)?;
-            let rows = sqlx::query(
+            let items_sql = format!(
                 r#"
 SELECT
   r.id, r.inviter_user_id, inviter.username AS inviter_username,
+  inviter.display_name AS inviter_display_name,
   r.invitee_user_id, invitee.username AS invitee_username,
+  invitee.display_name AS invitee_display_name,
   r.invite_code_snapshot, r.first_paid_order_id,
   EXTRACT(EPOCH FROM r.first_paid_at)::BIGINT AS first_paid_at_unix_secs,
   r.source_json::TEXT AS source_json,
@@ -1319,23 +1331,21 @@ SELECT
 FROM user_referrals r
 LEFT JOIN users inviter ON inviter.id = r.inviter_user_id
 LEFT JOIN users invitee ON invitee.id = r.invitee_user_id
-WHERE ($1 = '' OR LOWER(COALESCE(inviter.username, '')) LIKE $1 ESCAPE '!' OR LOWER(r.inviter_user_id) LIKE $1 ESCAPE '!')
-  AND ($2 = '' OR LOWER(COALESCE(invitee.username, '')) LIKE $2 ESCAPE '!' OR LOWER(r.invitee_user_id) LIKE $2 ESCAPE '!')
-  AND ($3 = '' OR LOWER(r.invite_code_snapshot) LIKE $3 ESCAPE '!')
-  AND ($4 < 0 OR ($4 = 1 AND r.first_paid_order_id IS NOT NULL) OR ($4 = 0 AND r.first_paid_order_id IS NULL))
+{REFERRAL_RELATIONSHIP_FILTER_SQL}
 ORDER BY r.created_at DESC, r.id DESC
 LIMIT $5 OFFSET $6
 "#,
-            )
-            .bind(&inviter_pattern)
-            .bind(&invitee_pattern)
-            .bind(&invite_code_pattern)
-            .bind(first_paid)
-            .bind(limit)
-            .bind(offset)
-            .fetch_all(&backend.pool_clone())
-            .await
-            .map_err(DataLayerError::postgres)?;
+            );
+            let rows = sqlx::query(&items_sql)
+                .bind(&inviter_pattern)
+                .bind(&invitee_pattern)
+                .bind(&invite_code_pattern)
+                .bind(first_paid)
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(&backend.pool_clone())
+                .await
+                .map_err(DataLayerError::postgres)?;
             let items = rows
                 .iter()
                 .map(|row| relationship_from_row!(row))
@@ -1358,7 +1368,9 @@ LIMIT $5 OFFSET $6
                 r#"
 SELECT
   r.id, r.inviter_user_id, inviter.username AS inviter_username,
+  inviter.display_name AS inviter_display_name,
   r.invitee_user_id, invitee.username AS invitee_username,
+  invitee.display_name AS invitee_display_name,
   r.invite_code_snapshot, r.first_paid_order_id,
   EXTRACT(EPOCH FROM r.first_paid_at)::BIGINT AS first_paid_at_unix_secs,
   r.source_json::TEXT AS source_json,
@@ -1392,7 +1404,9 @@ LIMIT 1
                 r#"
 SELECT
   r.id, r.inviter_user_id, inviter.username AS inviter_username,
+  inviter.display_name AS inviter_display_name,
   r.invitee_user_id, invitee.username AS invitee_username,
+  invitee.display_name AS invitee_display_name,
   r.invite_code_snapshot, r.first_paid_order_id,
   EXTRACT(EPOCH FROM r.first_paid_at)::BIGINT AS first_paid_at_unix_secs,
   r.source_json::TEXT AS source_json,
@@ -2641,6 +2655,66 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "postgres")]
+    #[tokio::test]
+    #[ignore = "requires AETHER_TEST_DATABASE_URL"]
+    async fn referral_relationship_name_filter_matches_postgres_count_and_page() {
+        let url = std::env::var("AETHER_TEST_DATABASE_URL").unwrap();
+        let pool = sqlx::PgPool::connect(&url).await.unwrap();
+        // CTE fixtures exercise the production predicate without changing stored data.
+        let fixture = r#"WITH
+            users(id, username, display_name) AS (
+                VALUES ('inviter-1', 'elodie-account', 'Élodie'),
+                       ('invitee-1', 'zhangsan-account', '张三')
+            ),
+            user_referrals(id, inviter_user_id, invitee_user_id, invite_code_snapshot, first_paid_order_id) AS (
+                VALUES ('referral-1', 'inviter-1', 'invitee-1', 'CODE', NULL::TEXT)
+            )"#;
+        let joins = "FROM user_referrals r LEFT JOIN users inviter ON inviter.id = r.inviter_user_id LEFT JOIN users invitee ON invitee.id = r.invitee_user_id";
+        let count_sql = format!(
+            "{fixture} SELECT COUNT(*) {joins} {}",
+            super::REFERRAL_RELATIONSHIP_FILTER_SQL
+        );
+        let list_sql = format!(
+            "{fixture} SELECT r.id {joins} {} ORDER BY r.id LIMIT $5 OFFSET $6",
+            super::REFERRAL_RELATIONSHIP_FILTER_SQL
+        );
+        for (inviter, invitee, expected) in [
+            ("Élodie", "", 1),
+            ("ÉLODIE", "张三", 1),
+            ("élodie", "", 1),
+            ("elodie-account", "", 1),
+            ("inviter-1", "", 1),
+            ("", "张三", 1),
+            ("missing", "", 0),
+            ("É%", "", 0),
+        ] {
+            let inviter = super::referral_like_pattern(Some(inviter));
+            let invitee = super::referral_like_pattern(Some(invitee));
+            let count: i64 = sqlx::query_scalar(&count_sql)
+                .bind(&inviter)
+                .bind(&invitee)
+                .bind("")
+                .bind(-1_i64)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            let ids: Vec<String> = sqlx::query_scalar(&list_sql)
+                .bind(&inviter)
+                .bind(&invitee)
+                .bind("")
+                .bind(-1_i64)
+                .bind(20_i64)
+                .bind(0_i64)
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+            assert_eq!(count, expected, "{inviter} / {invitee}");
+            assert_eq!(ids.len() as i64, count, "count and page must agree");
+        }
+        pool.close().await;
+    }
 
     #[test]
     fn referral_retry_only_allows_failed_rewards() {

@@ -949,7 +949,14 @@ impl WalletReadRepository for InMemoryWalletRepository {
             .expect("wallet repo lock")
             .values()
             .filter(|tx| tx.wallet_id == wallet_id)
-            .cloned()
+            .map(|transaction| {
+                let mut transaction = transaction.clone();
+                // This repository has no user join. Seeded names can be raw or stale
+                // accounts, so let the handler batch-resolve the current identity.
+                transaction.operator_name = None;
+                transaction.operator_email = None;
+                transaction
+            })
             .collect::<Vec<_>>();
         items.sort_by_key(|item| std::cmp::Reverse(item.created_at_unix_ms));
         let total = items.len() as u64;
@@ -2499,6 +2506,7 @@ impl WalletWriteRepository for InMemoryWalletRepository {
                         status: "active".to_string(),
                         redeemed_by_user_id: None,
                         redeemed_by_user_name: None,
+                        redeemed_by_user_display_name: None,
                         redeemed_wallet_id: None,
                         redeemed_payment_order_id: None,
                         redeemed_order_no: None,
@@ -2911,6 +2919,44 @@ mod tests {
             100,
         )
         .expect("wallet should build")
+    }
+
+    #[tokio::test]
+    async fn wallet_transaction_read_leaves_unjoined_operator_identity_for_batch_enrichment() {
+        let transaction = super::StoredAdminWalletTransaction {
+            id: "tx-identity".into(),
+            wallet_id: "wallet-1".into(),
+            category: "adjustment".into(),
+            reason_code: "admin_adjustment".into(),
+            amount: 1.0,
+            balance_before: 10.0,
+            balance_after: 11.0,
+            recharge_balance_before: 10.0,
+            recharge_balance_after: 11.0,
+            gift_balance_before: 2.0,
+            gift_balance_after: 2.0,
+            link_type: None,
+            link_id: None,
+            operator_id: Some("operator-1".into()),
+            operator_name: Some("raw-operator-account".into()),
+            operator_email: Some("old@example.com".into()),
+            description: None,
+            created_at_unix_ms: Some(100),
+        };
+        let repository = InMemoryWalletRepository::seed_read_model(WalletReadSeed {
+            wallets: vec![sample_wallet()],
+            wallet_transactions: vec![transaction],
+            ..WalletReadSeed::default()
+        });
+        let page = repository
+            .list_admin_wallet_transactions("wallet-1", 20, 0)
+            .await
+            .unwrap();
+        assert_eq!(page.total, 1);
+        assert_eq!(page.items[0].operator_id.as_deref(), Some("operator-1"));
+        assert_eq!(page.items[0].operator_name, None);
+        assert_eq!(page.items[0].operator_email, None);
+        assert_eq!(page.items[0].amount, 1.0);
     }
 
     #[tokio::test]

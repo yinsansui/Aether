@@ -1047,7 +1047,7 @@ async fn gateway_handles_dashboard_recent_requests_locally_without_proxying_upst
 }
 
 #[tokio::test]
-async fn gateway_handles_dashboard_recent_requests_with_auth_user_fallback() {
+async fn gateway_handles_dashboard_recent_requests_with_authoritative_user_reader() {
     let now = stable_dashboard_now();
     let user = sample_auth_user(now);
     let access_token = build_test_auth_token(
@@ -1093,10 +1093,7 @@ async fn gateway_handles_dashboard_recent_requests_with_auth_user_fallback() {
                     now,
                 )]));
             let data_state = GatewayDataState::with_user_wallet_and_usage_for_tests(
-                Arc::new(InMemoryUserReadRepository::seed_auth_users(Vec::<
-                    StoredUserAuthRecord,
-                >::new(
-                ))),
+                Arc::new(InMemoryUserReadRepository::seed_auth_users(vec![user.clone()])),
                 wallet_repository,
                 usage_repository,
             );

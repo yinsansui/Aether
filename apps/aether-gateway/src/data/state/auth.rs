@@ -356,11 +356,36 @@ impl GatewayDataState {
         username: String,
         created_at: chrono::DateTime<chrono::Utc>,
     ) -> Result<Option<StoredUserAuthRecord>, DataLayerError> {
+        self.create_oauth_auth_user_with_display_name(
+            email,
+            email_verified,
+            username,
+            created_at,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn create_oauth_auth_user_with_display_name(
+        &self,
+        email: Option<String>,
+        email_verified: bool,
+        username: String,
+        created_at: chrono::DateTime<chrono::Utc>,
+        display_name: Option<String>,
+    ) -> Result<Option<StoredUserAuthRecord>, DataLayerError> {
         let Some(repository) = self.user_reader.as_ref() else {
             return Ok(None);
         };
         repository
-            .create_oauth_auth_user(email, email_verified, username, created_at)
+            .create_oauth_auth_user_with_display_name(
+                email,
+                email_verified,
+                username,
+                created_at,
+                display_name,
+            )
             .await
     }
 
@@ -600,11 +625,39 @@ impl GatewayDataState {
         email_verified: Option<bool>,
         username: Option<String>,
     ) -> Result<Option<StoredUserAuthRecord>, DataLayerError> {
+        self.update_local_auth_user_profile_with_display_name(
+            user_id,
+            email_present,
+            email,
+            email_verified,
+            username,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn update_local_auth_user_profile_with_display_name(
+        &self,
+        user_id: &str,
+        email_present: bool,
+        email: Option<String>,
+        email_verified: Option<bool>,
+        username: Option<String>,
+        display_name: Option<Option<String>>,
+    ) -> Result<Option<StoredUserAuthRecord>, DataLayerError> {
         let Some(repository) = self.user_reader.as_ref() else {
             return Ok(None);
         };
         repository
-            .update_local_auth_user_profile(user_id, email_present, email, email_verified, username)
+            .update_local_auth_user_profile_with_display_name(
+                user_id,
+                email_present,
+                email,
+                email_verified,
+                username,
+                display_name,
+            )
             .await
     }
 
@@ -736,11 +789,40 @@ impl GatewayDataState {
         allowed_models: Option<Vec<String>>,
         rate_limit: Option<i32>,
     ) -> Result<Option<StoredUserAuthRecord>, DataLayerError> {
+        self.create_local_auth_user_with_settings_and_display_name(
+            email,
+            email_verified,
+            username,
+            password_hash,
+            role,
+            allowed_providers,
+            allowed_api_formats,
+            allowed_models,
+            rate_limit,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn create_local_auth_user_with_settings_and_display_name(
+        &self,
+        email: Option<String>,
+        email_verified: bool,
+        username: String,
+        password_hash: String,
+        role: String,
+        allowed_providers: Option<Vec<String>>,
+        allowed_api_formats: Option<Vec<String>>,
+        allowed_models: Option<Vec<String>>,
+        rate_limit: Option<i32>,
+        display_name: Option<String>,
+    ) -> Result<Option<StoredUserAuthRecord>, DataLayerError> {
         let Some(repository) = self.user_reader.as_ref() else {
             return Ok(None);
         };
         repository
-            .create_local_auth_user_with_settings(
+            .create_local_auth_user_with_settings_and_display_name(
                 email,
                 email_verified,
                 username,
@@ -750,6 +832,7 @@ impl GatewayDataState {
                 allowed_api_formats,
                 allowed_models,
                 rate_limit,
+                display_name,
             )
             .await
     }
@@ -835,8 +918,33 @@ impl GatewayDataState {
         initial_gift_usd: f64,
         unlimited: bool,
     ) -> Result<Option<StoredUserAuthRecord>, DataLayerError> {
+        self.get_or_create_ldap_auth_user_with_display_name(
+            email,
+            username,
+            ldap_dn,
+            ldap_username,
+            logged_in_at,
+            initial_gift_usd,
+            unlimited,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn get_or_create_ldap_auth_user_with_display_name(
+        &self,
+        email: String,
+        username: String,
+        ldap_dn: Option<String>,
+        ldap_username: Option<String>,
+        logged_in_at: chrono::DateTime<chrono::Utc>,
+        initial_gift_usd: f64,
+        unlimited: bool,
+        display_name: Option<String>,
+    ) -> Result<Option<StoredUserAuthRecord>, DataLayerError> {
         Ok(self
-            .get_or_create_ldap_auth_user_with_wallet_outcome(
+            .get_or_create_ldap_auth_user_with_wallet_outcome_and_display_name(
                 email,
                 username,
                 ldap_dn,
@@ -844,6 +952,7 @@ impl GatewayDataState {
                 logged_in_at,
                 initial_gift_usd,
                 unlimited,
+                display_name,
             )
             .await?
             .map(|result| result.user))
@@ -859,11 +968,43 @@ impl GatewayDataState {
         initial_gift_usd: f64,
         unlimited: bool,
     ) -> Result<Option<LdapAuthProvisioningResult>, DataLayerError> {
+        self.get_or_create_ldap_auth_user_with_wallet_outcome_and_display_name(
+            email,
+            username,
+            ldap_dn,
+            ldap_username,
+            logged_in_at,
+            initial_gift_usd,
+            unlimited,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn get_or_create_ldap_auth_user_with_wallet_outcome_and_display_name(
+        &self,
+        email: String,
+        username: String,
+        ldap_dn: Option<String>,
+        ldap_username: Option<String>,
+        logged_in_at: chrono::DateTime<chrono::Utc>,
+        initial_gift_usd: f64,
+        unlimited: bool,
+        display_name: Option<String>,
+    ) -> Result<Option<LdapAuthProvisioningResult>, DataLayerError> {
         let Some(repository) = self.user_reader.as_ref() else {
             return Ok(None);
         };
         let Some(outcome) = repository
-            .get_or_create_ldap_auth_user(email, username, ldap_dn, ldap_username, logged_in_at)
+            .get_or_create_ldap_auth_user_with_display_name(
+                email,
+                username,
+                ldap_dn,
+                ldap_username,
+                logged_in_at,
+                display_name,
+            )
             .await?
         else {
             return Ok(None);

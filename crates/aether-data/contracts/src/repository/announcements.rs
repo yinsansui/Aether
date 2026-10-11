@@ -12,6 +12,7 @@ pub struct StoredAnnouncement {
     pub requires_ack: bool,
     pub author_id: Option<String>,
     pub author_username: Option<String>,
+    pub author_display_name: Option<String>,
     pub start_time_unix_secs: Option<u64>,
     pub end_time_unix_secs: Option<u64>,
     pub created_at_unix_ms: u64,
@@ -68,6 +69,7 @@ impl StoredAnnouncement {
             requires_ack,
             author_id,
             author_username,
+            author_display_name: None,
             start_time_unix_secs: start_time_unix_secs
                 .map(|value| parse_timestamp(value, "announcements.start_time"))
                 .transpose()?,
@@ -80,6 +82,14 @@ impl StoredAnnouncement {
                 "announcements.updated_at",
             )?,
         })
+    }
+
+    pub fn with_author_display_name(mut self, display_name: Option<String>) -> Self {
+        self.author_display_name = display_name.and_then(|value| {
+            let trimmed = value.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        });
+        self
     }
 }
 

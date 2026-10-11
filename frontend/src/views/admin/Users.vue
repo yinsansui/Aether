@@ -112,7 +112,7 @@
     <UserPlanDialog
       :open="showUserPlansDialog"
       :user-id="selectedUser?.id || null"
-      :user-name="selectedUser?.username || ''"
+      :user-name="userIdentityLabel(selectedUser)"
       :entitlements="userPlanEntitlements"
       :plans="grantableBillingPlans"
       :selected-plan-id="selectedGrantPlanId"
@@ -135,6 +135,7 @@
 
     <UserApiKeysDialog
       :open="showApiKeysDialog"
+      :user-name="userIdentityLabel(selectedUser)"
       :api-keys="userApiKeys"
       :creating="creatingApiKey"
       :format-rate-limit="formatRateLimitSimple"
@@ -160,6 +161,7 @@
 
     <UserSessionsDialog
       :open="showUserSessionsDialog"
+      :user-name="userIdentityLabel(selectedUser)"
       :sessions="userSessions"
       :loading="loadingUserSessions"
       :action-loading="sessionDialogActionLoading"
@@ -173,7 +175,7 @@
     <WalletOpsDrawer
       :open="showWalletActionDialogState"
       :wallet="walletActionTarget?.wallet || null"
-      :owner-name="walletActionTarget?.user.username || ''"
+      :owner-name="userIdentityLabel(walletActionTarget?.user)"
       :owner-subtitle="walletActionTarget?.user.email || legacyT('未设置邮箱')"
       :context-label="legacyT('用户钱包')"
       accent="emerald"
@@ -191,6 +193,7 @@
 </template>
 
 <script setup lang="ts">
+import { userIdentityLabel } from '@/utils/userIdentity'
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useUsersStore } from '@/stores/users'
 import { useAuthStore } from '@/stores/auth'
@@ -709,8 +712,8 @@ async function toggleUserStatus(user: User) {
   const localizedAction = legacyT(action)
   const confirmed = await confirmDanger(
     locale.value === 'en-US'
-      ? `${localizedAction} user ${user.username}?`
-      : `确定要${action}用户 ${user.username} 吗？`,
+      ? `${localizedAction} user ${userIdentityLabel(user)}?`
+      : `确定要${action}用户 ${userIdentityLabel(user)} 吗？`,
     locale.value === 'en-US' ? `${localizedAction} user` : `${action}用户`,
     localizedAction
   )
@@ -739,6 +742,7 @@ function editUser(user: User) {
   editingUser.value = {
     id: user.id,
     username: user.username,
+    display_name: user.display_name,
     email: user.email ?? '',
     unlimited: user.unlimited,
     role: user.role,
@@ -761,6 +765,7 @@ async function handleUserFormSubmit(data: UserFormData & { password?: string; un
       // 更新用户
       const updateData: Record<string, unknown> = {
         username: data.username,
+        ...(data.display_name !== undefined ? { display_name: data.display_name } : {}),
         email: data.email || undefined,
         unlimited: data.unlimited,
         role: data.role,
@@ -770,13 +775,22 @@ async function handleUserFormSubmit(data: UserFormData & { password?: string; un
       if (data.password) {
         updateData.password = data.password
       }
-      await usersStore.updateUser(data.id, updateData)
+      const updatedUser = await usersStore.updateUser(data.id, updateData)
+      if (authStore.user?.id === data.id) {
+        // 先同步成功响应，刷新失败时也不会让侧边栏继续显示旧姓名。
+        authStore.user = { ...authStore.user, display_name: updatedUser.display_name }
+        await authStore.fetchCurrentUser()
+        if (authStore.user?.id === data.id) {
+          authStore.user = { ...authStore.user, display_name: updatedUser.display_name }
+        }
+      }
       invalidateUserOptions()
       success(legacyT('用户信息已更新'))
     } else {
       // 创建用户
       const newUser = await usersStore.createUser({
         username: data.username,
+        display_name: data.display_name,
         password: data.password ?? '',
         email: data.email || undefined,
         initial_gift_usd: data.initial_gift_usd,
@@ -1197,8 +1211,8 @@ async function handleWalletDrawerChanged() {
 async function deleteUser(user: User) {
   const confirmed = await confirmDanger(
     locale.value === 'en-US'
-      ? `Delete user ${user.username}?\n\nThis will delete:\n- User account\n- All API keys\n- All usage records\n\nThis action cannot be undone.`
-      : `确定要删除用户 ${user.username} 吗？\n\n此操作将删除：\n• 用户账户\n• 所有API密钥\n• 所有使用记录\n\n此操作无法撤销！`,
+      ? `Delete user ${userIdentityLabel(user)}?\n\nThis will delete:\n- User account\n- All API keys\n- All usage records\n\nThis action cannot be undone.`
+      : `确定要删除用户 ${userIdentityLabel(user)} 吗？\n\n此操作将删除：\n• 用户账户\n• 所有API密钥\n• 所有使用记录\n\n此操作无法撤销！`,
     legacyT('删除用户')
   )
 

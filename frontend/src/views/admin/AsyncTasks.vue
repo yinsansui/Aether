@@ -231,7 +231,10 @@
                   class="flex items-center gap-1.5"
                 >
                   <User class="w-3 h-3 text-muted-foreground" />
-                  <span class="truncate max-w-[100px]">{{ task.username }}</span>
+                  <span
+                    class="truncate max-w-[100px]"
+                    :title="userIdentityLabel(task)"
+                  >{{ userIdentityLabel(task) }}</span>
                 </div>
                 <div class="flex items-center gap-1.5 text-muted-foreground">
                   <Server class="w-3 h-3" />
@@ -382,7 +385,10 @@
               class="flex items-center gap-1.5 text-muted-foreground"
             >
               <User class="w-3 h-3" />
-              <span class="truncate">{{ task.username }}</span>
+              <span
+                class="truncate"
+                :title="userIdentityLabel(task)"
+              >{{ userIdentityLabel(task) }}</span>
             </div>
             <div class="flex items-center gap-1.5 text-muted-foreground">
               <Server class="w-3 h-3" />
@@ -508,7 +514,7 @@
                 <span>{{ formatDateFull(selectedTask.created_at) }}</span>
                 <template v-if="isAdmin">
                   <span class="opacity-40">|</span>
-                  <span>用户: {{ selectedTask.username }}</span>
+                  <span>用户: {{ userIdentityLabel(selectedTask) }}</span>
                 </template>
                 <span class="opacity-40">|</span>
                 <span>{{ displayTaskSource(selectedTask) }}</span>
@@ -858,6 +864,7 @@
 </template>
 
 <script setup lang="ts">
+import { userIdentityLabel } from '@/utils/userIdentity'
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { asyncTasksApi, type AsyncTaskItem, type AsyncTaskDetail, type AsyncTaskStatsResponse, type AsyncTaskStatus } from '@/api/async-tasks'
 import { useToast } from '@/composables/useToast'

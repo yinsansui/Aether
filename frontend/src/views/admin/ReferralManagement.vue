@@ -96,8 +96,8 @@
               v-for="item in relationships"
               :key="item.id"
             >
-              <TableCell>{{ item.inviter_username || item.inviter_user_id }}</TableCell>
-              <TableCell>{{ item.invitee_username || item.invitee_user_id }}</TableCell>
+              <TableCell>{{ userIdentityLabel({ username: item.inviter_username, display_name: item.inviter_display_name }) || item.inviter_user_id }}</TableCell>
+              <TableCell>{{ userIdentityLabel({ username: item.invitee_username, display_name: item.invitee_display_name }) || item.invitee_user_id }}</TableCell>
               <TableCell class="font-mono text-xs">
                 {{ item.invite_code_snapshot }}
               </TableCell>
@@ -261,6 +261,7 @@
 </template>
 
 <script setup lang="ts">
+import { userIdentityLabel } from '@/utils/userIdentity'
 import { getI18nLocale } from '@/i18n'
 import { computed, onMounted, ref } from 'vue'
 import { RefreshCw } from 'lucide-vue-next'

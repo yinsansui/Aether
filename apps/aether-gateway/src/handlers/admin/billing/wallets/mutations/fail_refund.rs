@@ -65,32 +65,38 @@ pub(in super::super) async fn build_admin_wallet_fail_refund_response(
             let owner = resolve_admin_wallet_owner_summary(state, &wallet).await?;
             let wallet_payload =
                 build_admin_wallet_summary_payload_with_package(state, &wallet, &owner).await?;
+            let transaction_payload = match transaction {
+                Some(transaction) => {
+                    build_admin_wallet_transaction_payload(
+                        state,
+                        &wallet,
+                        &owner,
+                        transaction.id,
+                        &transaction.category,
+                        &transaction.reason_code,
+                        transaction.amount,
+                        transaction.balance_before,
+                        transaction.balance_after,
+                        transaction.recharge_balance_before,
+                        transaction.recharge_balance_after,
+                        transaction.gift_balance_before,
+                        transaction.gift_balance_after,
+                        transaction.link_type.as_deref(),
+                        transaction.link_id.as_deref(),
+                        transaction.operator_id.as_deref(),
+                        transaction.description.as_deref(),
+                        unix_secs_to_rfc3339(stored_timestamp_unix_secs(
+                            transaction.created_at_unix_ms,
+                        )),
+                    )
+                    .await?
+                }
+                None => serde_json::Value::Null,
+            };
             let response = Json(json!({
                 "wallet": wallet_payload,
                 "refund": build_admin_wallet_refund_payload(&wallet, &owner, &refund),
-                "transaction": transaction
-                    .map(|transaction| {
-                        build_admin_wallet_transaction_payload(
-                            &wallet,
-                            &owner,
-                            transaction.id,
-                            &transaction.category,
-                            &transaction.reason_code,
-                            transaction.amount,
-                            transaction.balance_before,
-                            transaction.balance_after,
-                            transaction.recharge_balance_before,
-                            transaction.recharge_balance_after,
-                            transaction.gift_balance_before,
-                            transaction.gift_balance_after,
-                            transaction.link_type.as_deref(),
-                            transaction.link_id.as_deref(),
-                            transaction.operator_id.as_deref(),
-                            transaction.description.as_deref(),
-                            unix_secs_to_rfc3339(stored_timestamp_unix_secs(transaction.created_at_unix_ms)),
-                        )
-                    })
-                    .unwrap_or(serde_json::Value::Null),
+                "transaction": transaction_payload,
             }))
             .into_response();
             Ok(attach_admin_audit_response(

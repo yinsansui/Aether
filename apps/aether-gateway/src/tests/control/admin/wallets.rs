@@ -99,6 +99,32 @@ async fn assert_admin_wallets_post_route_returns_local_503(path: &str) {
     upstream_handle.abort();
 }
 
+fn wallet_identity_user(
+    id: &str,
+    username: &str,
+    display_name: Option<&str>,
+) -> StoredUserAuthRecord {
+    StoredUserAuthRecord::new(
+        id.to_string(),
+        None,
+        false,
+        username.to_string(),
+        Some("hash".to_string()),
+        "admin".to_string(),
+        "local".to_string(),
+        None,
+        None,
+        None,
+        true,
+        false,
+        None,
+        None,
+    )
+    .expect("wallet user should build")
+    .with_display_name(display_name.map(ToOwned::to_owned))
+    .expect("wallet display name should build")
+}
+
 fn sample_wallet_snapshot(
     wallet_id: &str,
     user_id: Option<&str>,
@@ -261,6 +287,80 @@ async fn gateway_handles_admin_wallets_list_locally_with_trusted_admin_principal
 }
 
 #[tokio::test]
+async fn gateway_wallet_identity_labels_match_between_list_and_detail() {
+    let cases = [
+        ("alice", Some("张三"), "张三（alice）"),
+        ("bob", None, "bob"),
+        ("charlie", Some("charlie"), "charlie"),
+        ("david", Some("  李四  "), "李四（david）"),
+    ];
+    let users = cases
+        .iter()
+        .map(|(username, display_name, _)| wallet_identity_user(username, username, *display_name))
+        .collect::<Vec<_>>();
+    let wallets = cases
+        .iter()
+        .map(|(username, _, _)| {
+            sample_wallet_snapshot(
+                &format!("wallet-{username}"),
+                Some(username),
+                None,
+                "finite",
+            )
+        })
+        .collect::<Vec<_>>();
+    let user_repository = Arc::new(InMemoryUserReadRepository::seed_auth_users(users));
+    let wallet_repository = Arc::new(InMemoryWalletRepository::seed(wallets));
+    let gateway = build_router_with_state(
+        AppState::new()
+            .expect("gateway should build")
+            .with_data_state_for_tests(GatewayDataState::with_user_and_wallet_for_tests(
+                user_repository,
+                wallet_repository,
+            )),
+    );
+    let (gateway_url, gateway_handle) = start_server(gateway).await;
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("{gateway_url}/api/admin/wallets"))
+        .header(GATEWAY_HEADER, "rust-phase3b")
+        .header(TRUSTED_ADMIN_USER_ID_HEADER, "admin-user-123")
+        .header(TRUSTED_ADMIN_USER_ROLE_HEADER, "admin")
+        .header(TRUSTED_ADMIN_SESSION_ID_HEADER, "session-123")
+        .send()
+        .await
+        .expect("wallet list request should succeed");
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: serde_json::Value = response.json().await.expect("wallet list should parse");
+    let items = payload["items"]
+        .as_array()
+        .expect("wallet list should contain items");
+    assert_eq!(items.len(), cases.len());
+    for (username, _, label) in cases {
+        let wallet_id = format!("wallet-{username}");
+        let item = items
+            .iter()
+            .find(|item| item["id"] == wallet_id)
+            .expect("wallet should exist");
+        assert_eq!(item["owner_type"], json!("user"));
+        assert_eq!(item["owner_name"], json!(label));
+        let response = client
+            .get(format!("{gateway_url}/api/admin/wallets/{wallet_id}"))
+            .header(GATEWAY_HEADER, "rust-phase3b")
+            .header(TRUSTED_ADMIN_USER_ID_HEADER, "admin-user-123")
+            .header(TRUSTED_ADMIN_USER_ROLE_HEADER, "admin")
+            .header(TRUSTED_ADMIN_SESSION_ID_HEADER, "session-123")
+            .send()
+            .await
+            .expect("wallet detail request should succeed");
+        assert_eq!(response.status(), StatusCode::OK);
+        let detail: serde_json::Value = response.json().await.expect("wallet detail should parse");
+        assert_eq!(detail["owner_name"], json!(label));
+    }
+    gateway_handle.abort();
+}
+
+#[tokio::test]
 async fn gateway_handles_admin_wallets_list_locally_with_bearer_admin_session() {
     let upstream_hits = Arc::new(Mutex::new(0usize));
     let upstream_hits_clone = Arc::clone(&upstream_hits);
@@ -377,7 +477,9 @@ async fn gateway_handles_admin_wallets_refund_requests_locally_with_trusted_admi
         None,
         None,
     )
-    .expect("user should build");
+    .expect("user should build")
+    .with_display_name(Some("钱包用户".to_string()))
+    .expect("display name should build");
     let user_bob = StoredUserAuthRecord::new(
         "user-456".to_string(),
         Some("bob@example.com".to_string()),
@@ -394,7 +496,9 @@ async fn gateway_handles_admin_wallets_refund_requests_locally_with_trusted_admi
         None,
         None,
     )
-    .expect("user should build");
+    .expect("user should build")
+    .with_display_name(Some("钱包用户".to_string()))
+    .expect("display name should build");
     let wallet_repository = Arc::new(InMemoryWalletRepository::seed(vec![
         sample_wallet_snapshot("wallet-user-123", Some("user-123"), None, "finite"),
         sample_wallet_snapshot("wallet-user-456", Some("user-456"), None, "finite"),
@@ -483,7 +587,7 @@ async fn gateway_handles_admin_wallets_refund_requests_locally_with_trusted_admi
     assert_eq!(payload["items"][0]["id"], json!("refund-user-older"));
     assert_eq!(payload["items"][0]["wallet_id"], json!("wallet-user-456"));
     assert_eq!(payload["items"][0]["owner_type"], json!("user"));
-    assert_eq!(payload["items"][0]["owner_name"], json!("bob"));
+    assert_eq!(payload["items"][0]["owner_name"], json!("钱包用户（bob）"));
     assert_eq!(payload["items"][0]["status"], json!("pending_approval"));
     assert_eq!(payload["items"][0]["payment_order_id"], json!("po-user-2"));
     assert_eq!(payload["total"], json!(2));
@@ -569,7 +673,9 @@ async fn gateway_handles_admin_wallets_detail_locally_with_trusted_admin_princip
         None,
         None,
     )
-    .expect("user should build");
+    .expect("user should build")
+    .with_display_name(Some("张三".to_string()))
+    .expect("display name should build");
     let wallet_repository = Arc::new(InMemoryWalletRepository::seed(vec![
         sample_wallet_snapshot("wallet-user-123", Some("user-123"), None, "finite"),
     ]));
@@ -636,7 +742,7 @@ async fn gateway_handles_admin_wallets_detail_locally_with_trusted_admin_princip
     assert_eq!(payload["id"], json!("wallet-user-123"));
     assert_eq!(payload["user_id"], json!("user-123"));
     assert_eq!(payload["owner_type"], json!("user"));
-    assert_eq!(payload["owner_name"], json!("alice"));
+    assert_eq!(payload["owner_name"], json!("张三（alice）"));
     assert_eq!(payload["balance"], json!(15.0));
     assert_eq!(payload["recharge_balance"], json!(12.5));
     assert_eq!(payload["gift_balance"], json!(2.5));
@@ -762,11 +868,12 @@ async fn gateway_handles_admin_wallets_transactions_locally_with_trusted_admin_p
         None,
         None,
     )
-    .expect("user should build");
+    .expect("user should build")
+    .with_display_name(Some("张三".to_string()))
+    .expect("display name should build");
     let wallet_repository = Arc::new(InMemoryWalletRepository::seed(vec![
         sample_wallet_snapshot("wallet-user-123", Some("user-123"), None, "finite"),
     ]));
-    let user_repository = Arc::new(InMemoryUserReadRepository::seed_auth_users(vec![user]));
     let operator = StoredUserAuthRecord::new(
         "admin-user-operator".to_string(),
         Some("admin@example.com".to_string()),
@@ -783,7 +890,13 @@ async fn gateway_handles_admin_wallets_transactions_locally_with_trusted_admin_p
         None,
         None,
     )
-    .expect("operator should build");
+    .expect("operator should build")
+    .with_display_name(Some("管理员".to_string()))
+    .expect("operator display name should build");
+    let user_repository = Arc::new(InMemoryUserReadRepository::seed_auth_users(vec![
+        user,
+        operator.clone(),
+    ]));
 
     let (upstream_url, upstream_handle) = start_server(upstream).await;
     let gateway = build_router_with_state(
@@ -827,12 +940,12 @@ async fn gateway_handles_admin_wallets_transactions_locally_with_trusted_admin_p
     assert_eq!(response.status(), StatusCode::OK);
     let payload: serde_json::Value = response.json().await.expect("json body should parse");
     assert_eq!(payload["wallet"]["id"], json!("wallet-user-123"));
-    assert_eq!(payload["wallet"]["owner_name"], json!("alice"));
+    assert_eq!(payload["wallet"]["owner_name"], json!("张三（alice）"));
     assert_eq!(payload["items"].as_array().map(Vec::len), Some(1));
     assert_eq!(payload["items"][0]["id"], json!("tx-123"));
     assert_eq!(payload["items"][0]["wallet_id"], json!("wallet-user-123"));
     assert_eq!(payload["items"][0]["owner_type"], json!("user"));
-    assert_eq!(payload["items"][0]["owner_name"], json!("alice"));
+    assert_eq!(payload["items"][0]["owner_name"], json!("张三（alice）"));
     assert_eq!(payload["items"][0]["category"], json!("recharge"));
     assert_eq!(payload["items"][0]["reason_code"], json!("manual_credit"));
     assert_eq!(
@@ -841,7 +954,7 @@ async fn gateway_handles_admin_wallets_transactions_locally_with_trusted_admin_p
     );
     assert_eq!(
         payload["items"][0]["operator_name"],
-        json!("admin-operator")
+        json!("管理员（admin-operator）")
     );
     assert_eq!(
         payload["items"][0]["operator_email"],
@@ -929,7 +1042,9 @@ async fn gateway_handles_admin_wallets_refunds_locally_with_trusted_admin_princi
         None,
         None,
     )
-    .expect("user should build");
+    .expect("user should build")
+    .with_display_name(Some("张三".to_string()))
+    .expect("display name should build");
     let wallet_repository = Arc::new(InMemoryWalletRepository::seed(vec![
         sample_wallet_snapshot("wallet-user-123", Some("user-123"), None, "finite"),
     ]));
@@ -1006,12 +1121,12 @@ async fn gateway_handles_admin_wallets_refunds_locally_with_trusted_admin_princi
     assert_eq!(response.status(), StatusCode::OK);
     let payload: serde_json::Value = response.json().await.expect("json body should parse");
     assert_eq!(payload["wallet"]["id"], json!("wallet-user-123"));
-    assert_eq!(payload["wallet"]["owner_name"], json!("alice"));
+    assert_eq!(payload["wallet"]["owner_name"], json!("张三（alice）"));
     assert_eq!(payload["items"].as_array().map(Vec::len), Some(1));
     assert_eq!(payload["items"][0]["id"], json!("refund-1"));
     assert_eq!(payload["items"][0]["wallet_id"], json!("wallet-user-123"));
     assert_eq!(payload["items"][0]["owner_type"], json!("user"));
-    assert_eq!(payload["items"][0]["owner_name"], json!("alice"));
+    assert_eq!(payload["items"][0]["owner_name"], json!("张三（alice）"));
     assert_eq!(payload["items"][0]["status"], json!("succeeded"));
     assert_eq!(payload["items"][0]["payment_order_id"], json!("po-1"));
     assert_eq!(payload["total"], json!(3));
@@ -1125,6 +1240,10 @@ async fn gateway_handles_admin_wallets_adjust_locally_with_trusted_admin_princip
     let gateway = build_router_with_state(
         AppState::new()
             .expect("gateway should build")
+            .with_auth_users_for_tests([
+                wallet_identity_user("user-1", "alice", Some("张三")),
+                wallet_identity_user("admin-user-123", "admin", Some("管理员")),
+            ])
             .with_auth_wallets_for_tests([sample_wallet_snapshot(
                 "wallet-adjust-123",
                 Some("user-1"),
@@ -1153,6 +1272,12 @@ async fn gateway_handles_admin_wallets_adjust_locally_with_trusted_admin_princip
 
     assert_eq!(response.status(), StatusCode::OK);
     let payload: serde_json::Value = response.json().await.expect("json body should parse");
+    assert_eq!(payload["wallet"]["owner_name"], json!("张三（alice）"));
+    assert_eq!(payload["transaction"]["owner_name"], json!("张三（alice）"));
+    assert_eq!(
+        payload["transaction"]["operator_name"],
+        json!("管理员（admin）")
+    );
     assert_eq!(payload["wallet"]["id"], "wallet-adjust-123");
     assert_eq!(payload["wallet"]["balance"], json!(19.0));
     assert_eq!(payload["wallet"]["recharge_balance"], json!(16.5));
@@ -1187,6 +1312,10 @@ async fn gateway_handles_admin_wallets_recharge_locally_with_trusted_admin_princ
     let gateway = build_router_with_state(
         AppState::new()
             .expect("gateway should build")
+            .with_auth_users_for_tests([
+                wallet_identity_user("user-1", "alice", Some("张三")),
+                wallet_identity_user("admin-user-123", "admin", Some("管理员")),
+            ])
             .with_auth_wallets_for_tests([sample_wallet_snapshot(
                 "wallet-recharge-123",
                 Some("user-1"),
@@ -1215,6 +1344,7 @@ async fn gateway_handles_admin_wallets_recharge_locally_with_trusted_admin_princ
 
     assert_eq!(response.status(), StatusCode::OK);
     let payload: serde_json::Value = response.json().await.expect("json body should parse");
+    assert_eq!(payload["wallet"]["owner_name"], json!("张三（alice）"));
     assert_eq!(payload["wallet"]["id"], "wallet-recharge-123");
     assert_eq!(payload["wallet"]["balance"], json!(23.0));
     assert_eq!(payload["wallet"]["recharge_balance"], json!(20.5));
@@ -1247,6 +1377,10 @@ async fn gateway_handles_admin_wallets_process_refund_locally_with_trusted_admin
     let gateway = build_router_with_state(
         AppState::new()
             .expect("gateway should build")
+            .with_auth_users_for_tests([
+                wallet_identity_user("user-1", "alice", Some("张三")),
+                wallet_identity_user("admin-user-123", "admin", Some("管理员")),
+            ])
             .with_auth_wallets_for_tests([sample_wallet_snapshot(
                 "wallet-123",
                 Some("user-1"),
@@ -1289,6 +1423,13 @@ async fn gateway_handles_admin_wallets_process_refund_locally_with_trusted_admin
 
     assert_eq!(response.status(), StatusCode::OK);
     let payload: serde_json::Value = response.json().await.expect("json body should parse");
+    assert_eq!(payload["wallet"]["owner_name"], json!("张三（alice）"));
+    assert_eq!(payload["transaction"]["owner_name"], json!("张三（alice）"));
+    assert_eq!(
+        payload["transaction"]["operator_name"],
+        json!("管理员（admin）")
+    );
+    assert_eq!(payload["refund"]["owner_name"], json!("张三（alice）"));
     assert_eq!(payload["wallet"]["id"], json!("wallet-123"));
     assert_eq!(payload["wallet"]["balance"], json!(11.0));
     assert_eq!(payload["wallet"]["recharge_balance"], json!(8.5));

@@ -14,6 +14,7 @@ export interface LoginResponse {
   user_id?: string // UUID
   email?: string
   username?: string
+  display_name?: string | null
   role?: string
 }
 
@@ -129,6 +130,7 @@ export interface BillingSummary {
 export interface User {
   id: string // UUID
   username: string
+  display_name?: string | null
   email?: string
   role: string  // 'admin' or 'user'
   is_active: boolean

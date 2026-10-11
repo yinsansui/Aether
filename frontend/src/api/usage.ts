@@ -12,6 +12,7 @@ export interface UsageRecord {
   id: string // UUID
   user_id: string // UUID
   username?: string
+  display_name?: string | null
   provider_id?: string // UUID
   provider_name?: string
   model: string
@@ -92,6 +93,7 @@ export interface UsageByUser {
   user_id: string // UUID
   email: string
   username: string
+  display_name?: string | null
   request_count: number
   total_tokens: number
   total_cost: number

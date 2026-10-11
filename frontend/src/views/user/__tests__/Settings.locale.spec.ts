@@ -9,6 +9,7 @@ const meApiMock = vi.hoisted(() => ({
   getPreferences: vi.fn(),
   listSessions: vi.fn(),
   updatePreferences: vi.fn(),
+  updateProfile: vi.fn(),
 }))
 const toastMock = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn() }))
 
@@ -147,6 +148,7 @@ beforeEach(() => {
   meApiMock.listSessions.mockResolvedValue([])
   meApiMock.getPreferences.mockResolvedValue(serverPreferences())
   meApiMock.updatePreferences.mockResolvedValue(undefined)
+  meApiMock.updateProfile.mockResolvedValue({ message: 'ok' })
 })
 
 afterEach(() => {
@@ -157,6 +159,45 @@ afterEach(() => {
 })
 
 describe('Settings language preferences', () => {
+  it('translates read-only name labels and administrator guidance without translating the actual name', async () => {
+    setI18nLocale('en-US')
+    meApiMock.getProfile.mockResolvedValueOnce({
+      id: 'settings-user', username: 'zhangsan', display_name: '张三', role: 'user',
+      is_active: true, auth_source: 'local', feature_settings: {},
+    })
+    const root = mountSettings()
+    await flushPromises()
+    const name = root.querySelector<HTMLInputElement>('#display-name')!
+    expect(root.querySelector('label[for="display-name"]')?.textContent).toBe('Name')
+    expect(root.querySelector('label[for="username"]')?.textContent).toBe('Login account')
+    expect(root.textContent).toContain('Your name is managed by an administrator. Contact an administrator to change it.')
+    expect(root.textContent).not.toContain('姓名由管理员维护')
+    expect(name.placeholder).toBe('Not set')
+    expect(name.readOnly).toBe(true)
+    expect(name.value).toBe('张三')
+  })
+
+  it('shows the administrator-managed name read-only and excludes it from self-service updates', async () => {
+    meApiMock.getProfile.mockResolvedValueOnce({
+      id: 'settings-user', username: 'zhangsan', display_name: '张三', role: 'user',
+      is_active: true, auth_source: 'local', feature_settings: {},
+    })
+    const root = mountSettings()
+    await flushPromises()
+    const name = root.querySelector<HTMLInputElement>('#display-name')!
+    expect(name.value).toBe('张三')
+    expect(name.readOnly).toBe(true)
+    expect(root.textContent).toContain('姓名由管理员维护')
+    const account = root.querySelector<HTMLInputElement>('#username')!
+    account.value = 'zhangsan2'
+    account.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    account.closest('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await flushPromises()
+    expect(meApiMock.updateProfile).toHaveBeenCalledWith({ username: 'zhangsan2', email: '' })
+    expect(meApiMock.updateProfile.mock.calls[0]![0]).not.toHaveProperty('display_name')
+  })
+
   it('initializes from the active locale and preserves it when old server preferences arrive', async () => {
     const preferences = deferred<ReturnType<typeof serverPreferences>>()
     meApiMock.getPreferences.mockReturnValueOnce(preferences.promise)

@@ -20,6 +20,7 @@ SELECT
   a.requires_ack,
   a.author_id,
   u.username AS author_username,
+  u.display_name AS author_display_name,
   EXTRACT(EPOCH FROM a.start_time)::bigint AS start_time_unix_secs,
   EXTRACT(EPOCH FROM a.end_time)::bigint AS end_time_unix_secs,
   EXTRACT(EPOCH FROM a.created_at)::bigint AS created_at_unix_ms,
@@ -40,6 +41,7 @@ SELECT
   a.requires_ack,
   a.author_id,
   u.username AS author_username,
+  u.display_name AS author_display_name,
   EXTRACT(EPOCH FROM a.start_time)::bigint AS start_time_unix_secs,
   EXTRACT(EPOCH FROM a.end_time)::bigint AS end_time_unix_secs,
   EXTRACT(EPOCH FROM a.created_at)::bigint AS created_at_unix_ms,
@@ -102,6 +104,7 @@ RETURNING
   requires_ack,
   author_id,
   (SELECT username FROM users WHERE id = announcements.author_id) AS author_username,
+  (SELECT display_name FROM users WHERE id = announcements.author_id) AS author_display_name,
   EXTRACT(EPOCH FROM start_time)::bigint AS start_time_unix_secs,
   EXTRACT(EPOCH FROM end_time)::bigint AS end_time_unix_secs,
   EXTRACT(EPOCH FROM created_at)::bigint AS created_at_unix_ms,
@@ -133,6 +136,7 @@ RETURNING
   requires_ack,
   author_id,
   (SELECT username FROM users WHERE id = announcements.author_id) AS author_username,
+  (SELECT display_name FROM users WHERE id = announcements.author_id) AS author_display_name,
   EXTRACT(EPOCH FROM start_time)::bigint AS start_time_unix_secs,
   EXTRACT(EPOCH FROM end_time)::bigint AS end_time_unix_secs,
   EXTRACT(EPOCH FROM created_at)::bigint AS created_at_unix_ms,
@@ -398,7 +402,7 @@ fn current_unix_secs() -> u64 {
 }
 
 fn map_announcement_row(row: &PgRow) -> Result<StoredAnnouncement, DataLayerError> {
-    StoredAnnouncement::new(
+    let announcement = StoredAnnouncement::new(
         row.try_get("id").map_postgres_err()?,
         row.try_get("title").map_postgres_err()?,
         row.try_get("content").map_postgres_err()?,
@@ -413,7 +417,10 @@ fn map_announcement_row(row: &PgRow) -> Result<StoredAnnouncement, DataLayerErro
         row.try_get("end_time_unix_secs").map_postgres_err()?,
         row.try_get("created_at_unix_ms").map_postgres_err()?,
         row.try_get("updated_at_unix_secs").map_postgres_err()?,
-    )
+    )?;
+    Ok(announcement.with_author_display_name(
+        row.try_get("author_display_name").map_postgres_err()?,
+    ))
 }
 
 #[cfg(test)]

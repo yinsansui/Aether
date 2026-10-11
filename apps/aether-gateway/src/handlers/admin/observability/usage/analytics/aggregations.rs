@@ -13,12 +13,12 @@ pub(in super::super) async fn admin_usage_aggregation_by_user_json(
         .iter()
         .map(|row| row.group_key.clone())
         .collect::<Vec<_>>();
-    let usernames = if state.has_user_data_reader() && !user_ids.is_empty() {
+    let users = if state.has_user_data_reader() && !user_ids.is_empty() {
         state
             .list_users_by_ids(&user_ids)
             .await?
             .into_iter()
-            .map(|user| (user.id, (user.email, user.username)))
+            .map(|user| (user.id, (user.email, user.username, user.display_name)))
             .collect::<BTreeMap<_, _>>()
     } else {
         BTreeMap::new()
@@ -27,10 +27,10 @@ pub(in super::super) async fn admin_usage_aggregation_by_user_json(
     Ok(json!(rows
         .iter()
         .map(|row| {
-            let (email, username) = usernames
+            let (email, username, display_name) = users
                 .get(&row.group_key)
                 .cloned()
-                .unwrap_or((None, String::new()));
+                .unwrap_or((None, String::new(), None));
             json!({
                 "user_id": row.group_key,
                 "email": email,
@@ -39,6 +39,7 @@ pub(in super::super) async fn admin_usage_aggregation_by_user_json(
                 } else {
                     json!(username)
                 },
+                "display_name": display_name,
                 "request_count": row.request_count,
                 "total_tokens": row.total_tokens,
                 "total_cost": round_to(row.total_cost_usd, 6),

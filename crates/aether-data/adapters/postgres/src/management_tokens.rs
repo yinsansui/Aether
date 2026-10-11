@@ -31,6 +31,7 @@ SELECT
   u.id AS user_row_id,
   u.email AS user_email,
   u.username AS user_username,
+  u.display_name AS user_display_name,
   u.role::text AS user_role
 FROM management_tokens mt
 JOIN users u ON u.id = mt.user_id
@@ -817,12 +818,14 @@ fn map_token_row(row: &PgRow) -> Result<StoredManagementToken, DataLayerError> {
 }
 
 fn map_user_summary_row(row: &PgRow) -> Result<StoredManagementTokenUserSummary, DataLayerError> {
+    let display_name = row.try_get("user_display_name").map_postgres_err()?;
     StoredManagementTokenUserSummary::new(
         row.try_get("user_row_id").map_postgres_err()?,
         row.try_get("user_email").map_postgres_err()?,
         row.try_get("user_username").map_postgres_err()?,
         row.try_get("user_role").map_postgres_err()?,
     )
+    .map(|summary| summary.with_display_name(display_name))
 }
 
 fn map_token_with_user_row(row: &PgRow) -> Result<StoredManagementTokenWithUser, DataLayerError> {

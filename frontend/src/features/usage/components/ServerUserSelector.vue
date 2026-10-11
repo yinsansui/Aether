@@ -22,7 +22,7 @@
         <Input
           v-model="searchText"
           class="h-8 pl-8 text-xs"
-          placeholder="搜索用户"
+          placeholder="搜索姓名、登录账号或邮箱"
           @keydown.stop
         />
       </div>
@@ -105,6 +105,7 @@ import { Check, ChevronDown, Search } from 'lucide-vue-next'
 import { Input } from '@/components/ui'
 import { usersApi } from '@/api/users'
 import type { UserOption } from './UsageRecordsTable.vue'
+import { userIdentityLabel } from '@/utils/userIdentity'
 
 const props = withDefaults(defineProps<{
   modelValue: string
@@ -164,7 +165,7 @@ watch(open, (isOpen) => {
 })
 
 function getUserLabel(user: UserOption): string {
-  return user.username || user.email || user.id
+  return userIdentityLabel(user) || user.email || user.id
 }
 
 function rememberUsers(nextUsers: UserOption[]) {
@@ -189,6 +190,7 @@ async function loadUsers(search: string) {
     const options = result.map((user) => ({
       id: user.id,
       username: user.username,
+      display_name: user.display_name,
       email: user.email ?? '',
     }))
     if (!search.trim()) loadedInitialBatch = true

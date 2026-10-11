@@ -35,6 +35,7 @@ export interface UserEffectivePolicy {
 export interface User {
   id: string // UUID
   username: string
+  display_name?: string | null
   email: string
   role: UserRole
   is_active: boolean
@@ -59,6 +60,7 @@ export interface User {
 
 export interface CreateUserRequest {
   username: string
+  display_name?: string | null
   password: string
   email?: string
   role?: UserRole
@@ -69,6 +71,7 @@ export interface CreateUserRequest {
 }
 
 export interface UpdateUserRequest {
+  display_name?: string | null
   email?: string
   is_active?: boolean
   role?: UserRole
@@ -94,6 +97,7 @@ export interface UserBatchSelection {
 export interface UserBatchSelectionItem {
   user_id: string
   username: string
+  display_name?: string | null
   email?: string | null
   role: UserRole
   is_active: boolean
@@ -197,6 +201,7 @@ export interface UserGroupMember {
   group_id: string
   user_id: string
   username: string
+  display_name?: string | null
   email?: string | null
   role: UserRole
   is_active: boolean

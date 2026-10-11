@@ -906,7 +906,7 @@
                             </Badge>
                           </TableCell>
                           <TableCell class="text-xs text-muted-foreground">
-                            {{ code.redeemed_by_user_name || code.redeemed_by_user_id || '-' }}
+                            {{ userIdentityLabel({ username: code.redeemed_by_user_name, display_name: code.redeemed_by_user_display_name }) || code.redeemed_by_user_id || '-' }}
                           </TableCell>
                           <TableCell class="font-mono text-xs">
                             {{ code.redeemed_order_no || code.redeemed_payment_order_id || '-' }}
@@ -1338,6 +1338,7 @@
 </template>
 
 <script setup lang="ts">
+import { userIdentityLabel } from '@/utils/userIdentity'
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import {

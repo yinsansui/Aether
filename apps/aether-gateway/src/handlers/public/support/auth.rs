@@ -254,7 +254,6 @@ async fn handle_auth_login(
                     return build_auth_internal_error_response("auth_ldap_login_failed", err, false)
                 }
             };
-            let _ = &ldap_user.display_name;
             let initial_gift = match state
                 .read_system_config_json_value("default_user_initial_gift_usd")
                 .await
@@ -269,7 +268,7 @@ async fn handle_auth_login(
                 }
             };
             let user = match state
-                .get_or_create_ldap_auth_user(
+                .get_or_create_ldap_auth_user_with_display_name(
                     ldap_user.email,
                     ldap_user.username,
                     Some(ldap_user.ldap_dn),
@@ -277,6 +276,7 @@ async fn handle_auth_login(
                     auth_now(),
                     initial_gift,
                     false,
+                    Some(ldap_user.display_name),
                 )
                 .await
             {

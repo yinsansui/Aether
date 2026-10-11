@@ -3,13 +3,13 @@ use futures_util::TryStreamExt;
 use sqlx::{PgPool, Postgres, QueryBuilder, Row};
 
 use aether_data_contracts::repository::users::{
-    is_valid_bcrypt_hash, last_oauth_unbind_denial, normalize_user_group_name,
-    BindUserOAuthLinkOutcome, BindUserOAuthLinkSessionExpectation, DeleteUserOAuthLinkOutcome,
-    LdapAuthUserProvisioningOutcome, ResolveOAuthLinkedUserOutcome, StoredUserAuthRecord,
-    StoredUserExportRow, StoredUserGroup, StoredUserGroupMember, StoredUserGroupMembership,
-    StoredUserOAuthLinkSummary, StoredUserPreferenceRecord, StoredUserSessionRecord,
-    StoredUserSummary, UpsertUserGroupRecord, UserExportListQuery, UserExportSortBy,
-    UserExportSummary, UserReadRepository, LAST_ACTIVE_ADMIN_DELETE_DENIED,
+    is_valid_bcrypt_hash, last_oauth_unbind_denial, normalize_user_display_name,
+    normalize_user_group_name, BindUserOAuthLinkOutcome, BindUserOAuthLinkSessionExpectation,
+    DeleteUserOAuthLinkOutcome, LdapAuthUserProvisioningOutcome, ResolveOAuthLinkedUserOutcome,
+    StoredUserAuthRecord, StoredUserExportRow, StoredUserGroup, StoredUserGroupMember,
+    StoredUserGroupMembership, StoredUserOAuthLinkSummary, StoredUserPreferenceRecord,
+    StoredUserSessionRecord, StoredUserSummary, UpsertUserGroupRecord, UserExportListQuery,
+    UserExportSortBy, UserExportSummary, UserReadRepository, LAST_ACTIVE_ADMIN_DELETE_DENIED,
     LAST_ACTIVE_ADMIN_UPDATE_DENIED,
 };
 use aether_data_contracts::DataLayerError;
@@ -20,6 +20,7 @@ const LIST_USERS_BY_IDS_SQL: &str = r#"
 SELECT
   id,
   username,
+  display_name,
   email,
   role::text AS role,
   is_active,
@@ -119,13 +120,14 @@ const LIST_USERS_BY_USERNAME_SEARCH_SQL: &str = r#"
 SELECT
   id,
   username,
+  display_name,
   email,
   role::text AS role,
   is_active,
   is_deleted
 FROM users
 WHERE is_deleted IS FALSE
-  AND LOWER(username) LIKE $1
+  AND (LOWER(username) LIKE LOWER($1) OR LOWER(email) LIKE LOWER($1) OR LOWER(display_name) LIKE LOWER($1))
 ORDER BY id ASC
 "#;
 
@@ -135,6 +137,7 @@ SELECT
   email,
   email_verified,
   username,
+  display_name,
   password_hash,
   role::text AS role,
   auth_source::text AS auth_source,
@@ -161,6 +164,7 @@ SELECT
   email,
   email_verified,
   username,
+  display_name,
   password_hash,
   role::text AS role,
   auth_source::text AS auth_source,
@@ -186,6 +190,7 @@ SELECT
   email,
   email_verified,
   username,
+  display_name,
   password_hash,
   role::text AS role,
   auth_source::text AS auth_source,
@@ -236,6 +241,7 @@ SELECT
   email,
   email_verified,
   username,
+  display_name,
   password_hash,
   role::text AS role,
   auth_source::text AS auth_source,
@@ -262,6 +268,7 @@ SELECT
   email,
   email_verified,
   username,
+  display_name,
   password_hash,
   role::text AS role,
   auth_source::text AS auth_source,
@@ -287,6 +294,7 @@ SELECT
   email,
   email_verified,
   username,
+  display_name,
   password_hash,
   role::text AS role,
   auth_source::text AS auth_source,
@@ -312,6 +320,7 @@ SELECT
   email,
   email_verified,
   username,
+  display_name,
   password_hash,
   role::text AS role,
   auth_source::text AS auth_source,
@@ -337,6 +346,7 @@ SELECT
   email,
   email_verified,
   username,
+  display_name,
   password_hash,
   role::text AS role,
   auth_source::text AS auth_source,
@@ -362,6 +372,7 @@ SELECT
   email,
   email_verified,
   username,
+  display_name,
   password_hash,
   role::text AS role,
   auth_source::text AS auth_source,
@@ -388,6 +399,7 @@ SELECT
   email,
   email_verified,
   username,
+  display_name,
   password_hash,
   role::text AS role,
   auth_source::text AS auth_source,
@@ -429,6 +441,7 @@ SELECT
   users.email,
   users.email_verified,
   users.username,
+  users.display_name,
   users.password_hash,
   users.role::text AS role,
   users.auth_source::text AS auth_source,
@@ -715,6 +728,7 @@ SELECT
   user_group_members.group_id,
   users.id AS user_id,
   users.username,
+  users.display_name,
   users.email,
   users.role::text AS role,
   users.is_active,
@@ -1282,6 +1296,9 @@ WHERE user_group_members.user_id IN (
             builder
                 .push(" AND (LOWER(id) LIKE ")
                 .push_bind(pattern.clone())
+                .push(" OR LOWER(display_name) LIKE LOWER(")
+                .push_bind(pattern.clone())
+                .push(")")
                 .push(" OR LOWER(username) LIKE ")
                 .push_bind(pattern.clone())
                 .push(" OR LOWER(COALESCE(email, '')) LIKE ")
@@ -1355,6 +1372,9 @@ WHERE user_group_members.user_id IN (
             builder
                 .push(" AND (LOWER(id) LIKE ")
                 .push_bind(pattern.clone())
+                .push(" OR LOWER(display_name) LIKE LOWER(")
+                .push_bind(pattern.clone())
+                .push(")")
                 .push(" OR LOWER(username) LIKE ")
                 .push_bind(pattern.clone())
                 .push(" OR LOWER(COALESCE(email, '')) LIKE ")
@@ -1590,16 +1610,37 @@ WHERE user_group_members.user_id IN (
         username: String,
         created_at: chrono::DateTime<chrono::Utc>,
     ) -> Result<Option<StoredUserAuthRecord>, DataLayerError> {
+        self.create_oauth_auth_user_with_display_name(
+            email,
+            email_verified,
+            username,
+            created_at,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_oauth_auth_user_with_display_name(
+        &self,
+        email: Option<String>,
+        email_verified: bool,
+        username: String,
+        created_at: chrono::DateTime<chrono::Utc>,
+        display_name: Option<String>,
+    ) -> Result<Option<StoredUserAuthRecord>, DataLayerError> {
+        // External profile defaults must never reject an otherwise valid login.
+        let display_name = normalize_user_display_name(display_name).ok().flatten();
         let user_id = uuid::Uuid::new_v4().to_string();
         sqlx::query(
             r#"
 INSERT INTO users (
-  id, email, email_verified, username, password_hash, role, auth_source,
+  id, email, email_verified, username, password_hash, role, auth_source, display_name,
   allowed_providers_mode, allowed_api_formats_mode, allowed_models_mode, rate_limit_mode,
   is_active, is_deleted, created_at, updated_at, last_login_at
 )
 VALUES (
-  $1, $2, $3, $4, NULL, 'user'::userrole, 'oauth'::authsource,
+  $1, $2, $3, $4, NULL, 'user'::userrole, 'oauth'::authsource, $6,
   'inherit', 'inherit', 'inherit', 'inherit',
   TRUE, FALSE, $5, $5, $5
 )
@@ -1610,6 +1651,7 @@ VALUES (
         .bind(email_verified)
         .bind(username)
         .bind(created_at)
+        .bind(display_name)
         .execute(&self.pool)
         .await
         .map_postgres_err()?;
@@ -1878,6 +1920,27 @@ FOR UPDATE OF user_oauth_links
         ldap_username: Option<String>,
         logged_in_at: chrono::DateTime<chrono::Utc>,
     ) -> Result<Option<LdapAuthUserProvisioningOutcome>, DataLayerError> {
+        self.get_or_create_ldap_auth_user_with_display_name(
+            email,
+            username,
+            ldap_dn,
+            ldap_username,
+            logged_in_at,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn get_or_create_ldap_auth_user_with_display_name(
+        &self,
+        email: String,
+        username: String,
+        ldap_dn: Option<String>,
+        ldap_username: Option<String>,
+        logged_in_at: chrono::DateTime<chrono::Utc>,
+        display_name: Option<String>,
+    ) -> Result<Option<LdapAuthUserProvisioningOutcome>, DataLayerError> {
         let mut tx = self.pool.begin().await.map_postgres_err()?;
         let existing = find_postgres_ldap_user_for_update(
             &mut tx,
@@ -1918,7 +1981,7 @@ SET email = $2,
     updated_at = $5
 WHERE id = $1
 RETURNING
-  id, email, email_verified, username, password_hash, role::text AS role,
+  id, email, email_verified, username, display_name, password_hash, role::text AS role,
   auth_source::text AS auth_source, allowed_providers, allowed_providers_mode,
   allowed_api_formats, allowed_api_formats_mode, allowed_models, allowed_models_mode,
   is_active, is_deleted, security_version, created_at, last_login_at
@@ -1939,6 +2002,9 @@ RETURNING
             }));
         }
 
+        // Only first-time provisioning consumes the external name. Invalid optional
+        // profile data does not affect authentication or an administrator's name.
+        let display_name = normalize_user_display_name(display_name).ok().flatten();
         let base_username = ldap_username
             .as_deref()
             .filter(|value| !value.trim().is_empty())
@@ -1965,12 +2031,12 @@ RETURNING
             let row = sqlx::query(
                 r#"
 INSERT INTO users (
-  id, email, email_verified, username, password_hash, role, auth_source,
+  id, email, email_verified, username, password_hash, role, auth_source, display_name,
   ldap_dn, ldap_username, is_active, is_deleted, created_at, updated_at, last_login_at
 )
-VALUES ($1, $2, TRUE, $3, NULL, 'user'::userrole, 'ldap'::authsource, $4, $5, TRUE, FALSE, $6, $6, $6)
+VALUES ($1, $2, TRUE, $3, NULL, 'user'::userrole, 'ldap'::authsource, $7, $4, $5, TRUE, FALSE, $6, $6, $6)
 RETURNING
-  id, email, email_verified, username, password_hash, role::text AS role,
+  id, email, email_verified, username, display_name, password_hash, role::text AS role,
   auth_source::text AS auth_source, allowed_providers, allowed_providers_mode,
   allowed_api_formats, allowed_api_formats_mode, allowed_models, allowed_models_mode,
   is_active, is_deleted, security_version, created_at, last_login_at
@@ -1982,6 +2048,7 @@ RETURNING
             .bind(ldap_dn.as_deref())
             .bind(ldap_username.as_deref())
             .bind(logged_in_at)
+            .bind(display_name.as_deref())
             .fetch_one(&mut *tx)
             .await
             .map_postgres_err()?;
@@ -2025,12 +2092,35 @@ RETURNING
         email_verified: Option<bool>,
         username: Option<String>,
     ) -> Result<Option<StoredUserAuthRecord>, DataLayerError> {
+        self.update_local_auth_user_profile_with_display_name(
+            user_id,
+            email_present,
+            email,
+            email_verified,
+            username,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn update_local_auth_user_profile_with_display_name(
+        &self,
+        user_id: &str,
+        email_present: bool,
+        email: Option<String>,
+        email_verified: Option<bool>,
+        username: Option<String>,
+        display_name: Option<Option<String>>,
+    ) -> Result<Option<StoredUserAuthRecord>, DataLayerError> {
+        let display_name = display_name.map(normalize_user_display_name).transpose()?;
         let result = sqlx::query(
             r#"
 UPDATE users
 SET email = CASE WHEN $2 THEN $3 ELSE email END,
     email_verified = COALESCE($4, email_verified),
     username = COALESCE($5, username),
+    display_name = CASE WHEN $6 THEN $7 ELSE display_name END,
     updated_at = NOW()
 WHERE id = $1
 "#,
@@ -2040,6 +2130,8 @@ WHERE id = $1
         .bind(email)
         .bind(email_verified)
         .bind(username)
+        .bind(display_name.is_some())
+        .bind(display_name.flatten())
         .execute(&self.pool)
         .await
         .map_postgres_err()?;
@@ -2151,6 +2243,7 @@ SET email = $2,
     feature_settings = $15::jsonb,
     is_active = $16,
     security_version = security_version + CASE WHEN $17 THEN 1 ELSE 0 END,
+    display_name = $18,
     updated_at = NOW()
 WHERE id = $1
 "#,
@@ -2172,6 +2265,7 @@ WHERE id = $1
         .bind(restored_feature_settings.clone())
         .bind(restored_auth.is_active)
         .bind(security_state_changed)
+        .bind(&restored_auth.display_name)
         .execute(&mut *tx)
         .await
         .map_postgres_err()?;
@@ -2698,6 +2792,36 @@ VALUES (
         allowed_models: Option<Vec<String>>,
         rate_limit: Option<i32>,
     ) -> Result<Option<StoredUserAuthRecord>, DataLayerError> {
+        self.create_local_auth_user_with_settings_and_display_name(
+            email,
+            email_verified,
+            username,
+            password_hash,
+            role,
+            allowed_providers,
+            allowed_api_formats,
+            allowed_models,
+            rate_limit,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_local_auth_user_with_settings_and_display_name(
+        &self,
+        email: Option<String>,
+        email_verified: bool,
+        username: String,
+        password_hash: String,
+        role: String,
+        allowed_providers: Option<Vec<String>>,
+        allowed_api_formats: Option<Vec<String>>,
+        allowed_models: Option<Vec<String>>,
+        rate_limit: Option<i32>,
+        display_name: Option<String>,
+    ) -> Result<Option<StoredUserAuthRecord>, DataLayerError> {
+        let display_name = normalize_user_display_name(display_name)?;
         let user_id = uuid::Uuid::new_v4().to_string();
         let allowed_providers_mode = if allowed_providers
             .as_ref()
@@ -2731,7 +2855,7 @@ VALUES (
         sqlx::query(
             r#"
 INSERT INTO users (
-  id, email, email_verified, username, password_hash, role, auth_source,
+  id, email, email_verified, username, password_hash, role, auth_source, display_name,
   allowed_providers, allowed_providers_mode,
   allowed_api_formats, allowed_api_formats_mode,
   allowed_models, allowed_models_mode,
@@ -2739,7 +2863,7 @@ INSERT INTO users (
   is_active, is_deleted, created_at, updated_at
 )
 VALUES (
-  $1, $2, $3, $4, $5, $6::userrole, 'local'::authsource,
+  $1, $2, $3, $4, $5, $6::userrole, 'local'::authsource, $15,
   $7::json, $8, $9::json, $10, $11::json, $12, $13, $14,
   TRUE, FALSE, NOW(), NOW()
 )
@@ -2759,6 +2883,7 @@ VALUES (
         .bind(allowed_models_mode)
         .bind(rate_limit)
         .bind(rate_limit_mode)
+        .bind(display_name)
         .execute(&self.pool)
         .await
         .map_postgres_err()?;
@@ -3273,10 +3398,10 @@ async fn find_postgres_ldap_user_for_update(
 ) -> Result<Option<StoredUserAuthRecord>, DataLayerError> {
     let select_columns = r#"
 SELECT
-  id, email, email_verified, username, password_hash, role::text AS role,
+  id, email, email_verified, username, display_name, password_hash, role::text AS role,
   auth_source::text AS auth_source, allowed_providers, allowed_providers_mode,
   allowed_api_formats, allowed_api_formats_mode, allowed_models, allowed_models_mode,
-  is_active, is_deleted, created_at, last_login_at
+  is_active, is_deleted, security_version, created_at, last_login_at
 FROM users
 "#;
     if let Some(ldap_dn) = ldap_dn.filter(|value| !value.trim().is_empty()) {
@@ -3322,6 +3447,7 @@ fn map_user_row(row: &sqlx::postgres::PgRow) -> Result<StoredUserSummary, DataLa
         row.try_get("is_active").map_postgres_err()?,
         row.try_get("is_deleted").map_postgres_err()?,
     )
+    .and_then(|record| record.with_display_name(row.try_get("display_name").map_postgres_err()?))
 }
 
 fn map_user_export_row(row: &sqlx::postgres::PgRow) -> Result<StoredUserExportRow, DataLayerError> {
@@ -3342,6 +3468,7 @@ fn map_user_export_row(row: &sqlx::postgres::PgRow) -> Result<StoredUserExportRo
             .map_postgres_err()?,
         row.try_get("is_active").map_postgres_err()?,
     )
+    .and_then(|record| record.with_display_name(row.try_get("display_name").map_postgres_err()?))
     .map(|record| record.with_feature_settings(feature_settings))
     .and_then(|record| {
         record.with_policy_modes(
@@ -3370,6 +3497,7 @@ fn map_user_auth_row(row: &sqlx::postgres::PgRow) -> Result<StoredUserAuthRecord
         row.try_get("created_at").map_postgres_err()?,
         row.try_get("last_login_at").map_postgres_err()?,
     )
+    .and_then(|record| record.with_display_name(row.try_get("display_name").map_postgres_err()?))
     .and_then(|record| {
         record.with_security_version(row.try_get("security_version").map_postgres_err()?)
     })
@@ -3409,6 +3537,7 @@ fn map_user_group_member_row(
         group_id: row.try_get("group_id").map_postgres_err()?,
         user_id: row.try_get("user_id").map_postgres_err()?,
         username: row.try_get("username").map_postgres_err()?,
+        display_name: row.try_get("display_name").map_postgres_err()?,
         email: row.try_get("email").map_postgres_err()?,
         role: row.try_get("role").map_postgres_err()?,
         is_active: row.try_get("is_active").map_postgres_err()?,
@@ -3713,8 +3842,33 @@ impl UserReadRepository for SqlxUserReadRepository {
         username: String,
         created_at: chrono::DateTime<chrono::Utc>,
     ) -> Result<Option<StoredUserAuthRecord>, DataLayerError> {
-        self.create_oauth_auth_user(email, email_verified, username, created_at)
-            .await
+        self.create_oauth_auth_user_with_display_name(
+            email,
+            email_verified,
+            username,
+            created_at,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn create_oauth_auth_user_with_display_name(
+        &self,
+        email: Option<String>,
+        email_verified: bool,
+        username: String,
+        created_at: chrono::DateTime<chrono::Utc>,
+        display_name: Option<String>,
+    ) -> Result<Option<StoredUserAuthRecord>, DataLayerError> {
+        self.create_oauth_auth_user_with_display_name(
+            email,
+            email_verified,
+            username,
+            created_at,
+            display_name,
+        )
+        .await
     }
 
     async fn find_oauth_link_owner(
@@ -3911,8 +4065,36 @@ FOR UPDATE OF users, user_sessions
         ldap_username: Option<String>,
         logged_in_at: chrono::DateTime<chrono::Utc>,
     ) -> Result<Option<LdapAuthUserProvisioningOutcome>, DataLayerError> {
-        self.get_or_create_ldap_auth_user(email, username, ldap_dn, ldap_username, logged_in_at)
-            .await
+        self.get_or_create_ldap_auth_user_with_display_name(
+            email,
+            username,
+            ldap_dn,
+            ldap_username,
+            logged_in_at,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn get_or_create_ldap_auth_user_with_display_name(
+        &self,
+        email: String,
+        username: String,
+        ldap_dn: Option<String>,
+        ldap_username: Option<String>,
+        logged_in_at: chrono::DateTime<chrono::Utc>,
+        display_name: Option<String>,
+    ) -> Result<Option<LdapAuthUserProvisioningOutcome>, DataLayerError> {
+        self.get_or_create_ldap_auth_user_with_display_name(
+            email,
+            username,
+            ldap_dn,
+            ldap_username,
+            logged_in_at,
+            display_name,
+        )
+        .await
     }
 
     async fn touch_auth_user_last_login(
@@ -3931,8 +4113,36 @@ FOR UPDATE OF users, user_sessions
         email_verified: Option<bool>,
         username: Option<String>,
     ) -> Result<Option<StoredUserAuthRecord>, DataLayerError> {
-        self.update_local_auth_user_profile(user_id, email_present, email, email_verified, username)
-            .await
+        self.update_local_auth_user_profile_with_display_name(
+            user_id,
+            email_present,
+            email,
+            email_verified,
+            username,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn update_local_auth_user_profile_with_display_name(
+        &self,
+        user_id: &str,
+        email_present: bool,
+        email: Option<String>,
+        email_verified: Option<bool>,
+        username: Option<String>,
+        display_name: Option<Option<String>>,
+    ) -> Result<Option<StoredUserAuthRecord>, DataLayerError> {
+        self.update_local_auth_user_profile_with_display_name(
+            user_id,
+            email_present,
+            email,
+            email_verified,
+            username,
+            display_name,
+        )
+        .await
     }
 
     async fn restore_local_auth_user_state_if_matches(
@@ -4101,7 +4311,7 @@ FOR UPDATE OF users, user_sessions
         allowed_models: Option<Vec<String>>,
         rate_limit: Option<i32>,
     ) -> Result<Option<StoredUserAuthRecord>, DataLayerError> {
-        self.create_local_auth_user_with_settings(
+        self.create_local_auth_user_with_settings_and_display_name(
             email,
             email_verified,
             username,
@@ -4111,6 +4321,36 @@ FOR UPDATE OF users, user_sessions
             allowed_api_formats,
             allowed_models,
             rate_limit,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn create_local_auth_user_with_settings_and_display_name(
+        &self,
+        email: Option<String>,
+        email_verified: bool,
+        username: String,
+        password_hash: String,
+        role: String,
+        allowed_providers: Option<Vec<String>>,
+        allowed_api_formats: Option<Vec<String>>,
+        allowed_models: Option<Vec<String>>,
+        rate_limit: Option<i32>,
+        display_name: Option<String>,
+    ) -> Result<Option<StoredUserAuthRecord>, DataLayerError> {
+        self.create_local_auth_user_with_settings_and_display_name(
+            email,
+            email_verified,
+            username,
+            password_hash,
+            role,
+            allowed_providers,
+            allowed_api_formats,
+            allowed_models,
+            rate_limit,
+            display_name,
         )
         .await
     }
@@ -4257,6 +4497,46 @@ mod admin_invariant_tests {
         POSTGRES_ANONYMIZE_USER_API_KEY_HISTORY_SQL, POSTGRES_ANONYMIZE_USER_HISTORY_SQL,
         POSTGRES_DELETE_USER_DEPENDENTS_SQL, POSTGRES_LOCK_ACTIVE_ADMINS_SQL,
     };
+
+    #[tokio::test]
+    #[ignore = "requires migrated AETHER_TEST_DATABASE_URL"]
+    async fn unicode_display_name_search_matches_postgres_page_count_and_selector() {
+        use aether_data_contracts::repository::users::UserExportListQuery;
+        let url = std::env::var("AETHER_TEST_DATABASE_URL").unwrap();
+        // A single connection keeps the fixture in a temporary table, without touching users.
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .max_lifetime(None)
+            .idle_timeout(None)
+            .connect(&url)
+            .await
+            .unwrap();
+        sqlx::query("CREATE TEMP TABLE users (LIKE public.users INCLUDING DEFAULTS)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO users (id, username, display_name, email_verified) VALUES ('unicode-name-test', 'elodie-account', 'Élodie', FALSE)")
+            .execute(&pool).await.unwrap();
+        let repository = super::SqlxUserReadRepository::new(pool.clone());
+        for search in ["Élodie", "ÉLODIE", "élodie"] {
+            let query = UserExportListQuery {
+                search: Some(search.into()),
+                limit: 20,
+                ..Default::default()
+            };
+            let rows = repository.list_export_users_page(&query).await.unwrap();
+            assert_eq!(rows.len(), 1, "{search}");
+            assert_eq!(rows[0].display_name.as_deref(), Some("Élodie"));
+            assert_eq!(repository.count_export_users(&query).await.unwrap(), 1);
+            let users = repository
+                .list_users_by_username_search(search)
+                .await
+                .unwrap();
+            assert_eq!(users.len(), 1, "{search}");
+            assert_eq!(users[0].id, "unicode-name-test");
+        }
+        pool.close().await;
+    }
 
     #[test]
     fn active_admin_mutations_use_a_deterministic_postgres_row_lock() {

@@ -82,6 +82,21 @@ pub(super) async fn handle_users_me_detail_put(
     let Some(request_body) = request_body else {
         return build_auth_error_response(http::StatusCode::BAD_REQUEST, "缺少请求体", false);
     };
+    if serde_json::from_slice::<serde_json::Value>(request_body)
+        .ok()
+        .and_then(|value| {
+            value
+                .as_object()
+                .map(|object| object.contains_key("display_name"))
+        })
+        .unwrap_or(false)
+    {
+        return build_auth_error_response(
+            http::StatusCode::BAD_REQUEST,
+            "姓名只能由管理员修改",
+            false,
+        );
+    }
     let payload = match serde_json::from_slice::<UsersMeUpdateProfileRequest>(request_body) {
         Ok(value) => value,
         Err(_) => {

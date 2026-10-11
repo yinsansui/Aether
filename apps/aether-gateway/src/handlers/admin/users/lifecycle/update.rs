@@ -113,6 +113,22 @@ pub(in super::super) async fn build_admin_update_user_response(
         }
     }
 
+    let display_name = if field_presence.contains("display_name") {
+        match aether_data::repository::users::normalize_user_display_name(
+            payload.display_name.clone(),
+        ) {
+            Ok(value) => Some(value),
+            Err(err) => {
+                return Ok((
+                    http::StatusCode::BAD_REQUEST,
+                    Json(json!({"detail": err.to_string()})),
+                )
+                    .into_response())
+            }
+        }
+    } else {
+        None
+    };
     let username = match payload.username.as_deref() {
         Some(value) => match normalize_admin_username(value) {
             Ok(value) => Some(value),
@@ -166,6 +182,7 @@ pub(in super::super) async fn build_admin_update_user_response(
     let mutates_existing_admin = crate::roles::can_access_admin_console(&existing_user.role)
         && (email.is_some()
             || username.is_some()
+            || display_name.is_some()
             || payload.password.is_some()
             || role.is_some()
             || payload.is_active.is_some()
@@ -228,6 +245,7 @@ pub(in super::super) async fn build_admin_update_user_response(
     }
     let needs_auth_user_write = email_present
         || username.is_some()
+        || display_name.is_some()
         || payload.password.is_some()
         || role.is_some()
         || payload.is_active.is_some()
@@ -244,7 +262,7 @@ pub(in super::super) async fn build_admin_update_user_response(
         ));
     }
 
-    if email_present || username.is_some() {
+    if email_present || username.is_some() || display_name.is_some() {
         let resets_email_verification = email.as_deref().is_some_and(|email| {
             existing_user
                 .email
@@ -252,12 +270,13 @@ pub(in super::super) async fn build_admin_update_user_response(
                 .is_none_or(|existing| !existing.trim().eq_ignore_ascii_case(email.trim()))
         });
         if state
-            .update_local_auth_user_profile(
+            .update_local_auth_user_profile_with_display_name(
                 &user_id,
                 email_present,
                 email.clone(),
                 resets_email_verification.then_some(false),
                 username.clone(),
+                display_name.clone(),
             )
             .await?
             .is_none()

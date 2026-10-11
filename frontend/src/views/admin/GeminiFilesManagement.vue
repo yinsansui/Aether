@@ -336,11 +336,11 @@
                   {{ mapping.mime_type }}
                 </span>
                 <span
-                  v-if="mapping.username"
+                  v-if="mapping.user_display_name || mapping.username"
                   class="flex items-center gap-1"
                 >
                   <User class="w-3 h-3" />
-                  {{ mapping.username }}
+                  {{ userIdentityLabel({ username: mapping.username, display_name: mapping.user_display_name }) }}
                 </span>
                 <span
                   v-if="mapping.key_name"
@@ -413,6 +413,7 @@
 </template>
 
 <script setup lang="ts">
+import { userIdentityLabel } from '@/utils/userIdentity'
 import { ref, computed, watch, onMounted } from 'vue'
 import { useToast } from '@/composables/useToast'
 import { getI18nLocale, useI18n } from '@/i18n'

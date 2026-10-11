@@ -41,6 +41,7 @@ impl AppState {
                     "user_id": record.user_id,
                     "user_email": record.user_email,
                     "user_username": record.user_username,
+                    "user_display_name": record.user_display_name,
                     "description": record.description,
                     "ip_address": record.ip_address,
                     "status_code": record.status_code,

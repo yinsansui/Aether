@@ -76,6 +76,83 @@ async fn local_admin_video_tasks_response(
     .expect("video tasks route should resolve locally")
 }
 
+#[tokio::test]
+async fn gateway_video_task_identity_uses_current_account_and_falls_back_for_missing_users() {
+    use aether_data::repository::users::InMemoryUserReadRepository;
+    use aether_data_contracts::repository::users::StoredUserSummary;
+    let repository = Arc::new(InMemoryVideoTaskRepository::default());
+    for (id, user_id) in [("renamed-task", "user-1"), ("deleted-task", "deleted-user")] {
+        repository
+            .upsert(sample_admin_video_task(
+                id,
+                VideoTaskStatus::Completed,
+                1_710_000_000,
+                user_id,
+                "old-account",
+                "provider-1",
+                "gpt-video",
+                "prompt",
+            ))
+            .await
+            .unwrap();
+    }
+    let user = StoredUserSummary::new(
+        "user-1".into(),
+        "zhangsan".into(),
+        None,
+        "user".into(),
+        true,
+        false,
+    )
+    .unwrap()
+    .with_display_name(Some("zhangsan".into()))
+    .unwrap();
+    let state = AppState::new().unwrap().with_data_state_for_tests(
+        GatewayDataState::with_video_task_repository_for_tests(repository)
+            .with_user_reader(Arc::new(InMemoryUserReadRepository::seed([user]))),
+    );
+    let response = local_admin_video_tasks_response(
+        &state,
+        http::Method::GET,
+        "/api/admin/video-tasks?page_size=20",
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    for item in payload["items"].as_array().unwrap() {
+        let expected = if item["id"] == "renamed-task" {
+            "zhangsan"
+        } else {
+            "old-account"
+        };
+        assert_eq!(item["username"], expected);
+        if item["id"] == "renamed-task" {
+            assert_eq!(item["display_name"], "zhangsan");
+        } else {
+            assert!(item["display_name"].is_null());
+        }
+    }
+    for (id, expected, display_name) in [
+        ("renamed-task", "zhangsan", Some("zhangsan")),
+        ("deleted-task", "old-account", None),
+    ] {
+        let response = local_admin_video_tasks_response(
+            &state,
+            http::Method::GET,
+            &format!("/api/admin/video-tasks/{id}"),
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let detail: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(detail["username"], expected);
+        assert_eq!(detail["display_name"], json!(display_name));
+    }
+}
+
 fn sample_admin_video_task(
     id: &str,
     status: VideoTaskStatus,

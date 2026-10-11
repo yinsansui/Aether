@@ -78,9 +78,29 @@ pub(super) async fn build_admin_video_task_provider_names(
         .collect())
 }
 
+pub(super) async fn build_admin_video_task_user_identities(
+    state: &AdminAppState<'_>,
+    tasks: &[StoredVideoTask],
+) -> Result<
+    BTreeMap<String, aether_data_contracts::repository::users::StoredUserSummary>,
+    GatewayError,
+> {
+    let user_ids = tasks
+        .iter()
+        .filter_map(|task| task.user_id.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    if user_ids.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    state.resolve_auth_user_summaries_by_ids(&user_ids).await
+}
+
 pub(super) fn build_admin_video_task_list_item(
     task: &StoredVideoTask,
     provider_names: &BTreeMap<String, String>,
+    user_identities: &BTreeMap<String, aether_data_contracts::repository::users::StoredUserSummary>,
 ) -> Value {
     let provider_name = task
         .provider_id
@@ -88,11 +108,14 @@ pub(super) fn build_admin_video_task_list_item(
         .and_then(|provider_id| provider_names.get(provider_id))
         .cloned()
         .unwrap_or_else(|| "Unknown".to_string());
+    let user = task.user_id.as_ref().and_then(|id| user_identities.get(id));
     json!({
         "id": task.id,
         "external_task_id": task.external_task_id,
         "user_id": task.user_id,
-        "username": task.username.clone().unwrap_or_else(|| "Unknown".to_string()),
+        "username": user.map(|user| user.username.as_str())
+            .or(task.username.as_deref()).unwrap_or("Unknown"),
+        "display_name": user.and_then(|user| user.display_name.as_deref()),
         "model": task.model,
         "prompt": truncate_admin_video_task_prompt(task.prompt.as_deref()),
         "status": admin_video_task_status_name(task.status),
@@ -198,7 +221,7 @@ mod tests {
             admin_video_task_error_projection(&task).as_deref(),
             Some("authentication_error")
         );
-        let payload = build_admin_video_task_list_item(&task, &BTreeMap::new());
+        let payload = build_admin_video_task_list_item(&task, &BTreeMap::new(), &BTreeMap::new());
         assert_eq!(payload["error_message"], "authentication_error");
         assert!(!payload.to_string().contains("live-secret"));
     }

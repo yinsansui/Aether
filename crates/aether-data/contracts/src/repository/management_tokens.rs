@@ -5,6 +5,7 @@ pub struct StoredManagementTokenUserSummary {
     pub id: String,
     pub email: Option<String>,
     pub username: String,
+    pub display_name: Option<String>,
     pub role: String,
 }
 
@@ -34,8 +35,14 @@ impl StoredManagementTokenUserSummary {
             id,
             email,
             username,
+            display_name: None,
             role,
         })
+    }
+
+    pub fn with_display_name(mut self, display_name: Option<String>) -> Self {
+        self.display_name = display_name.filter(|value| !value.trim().is_empty());
+        self
     }
 }
 

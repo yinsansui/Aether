@@ -153,6 +153,7 @@ export interface UserExport {
   email: string
   email_verified?: boolean
   username: string
+  display_name?: string | null
   password_hash?: string | null
   role: string
   allowed_providers?: string[] | null
@@ -664,6 +665,7 @@ export interface AdminApiKey {
   user_id: string // UUID
   user_email?: string
   username?: string
+  display_name?: string | null
   name?: string
   key_display?: string  // 脱敏后的密钥显示
   is_active: boolean

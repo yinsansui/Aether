@@ -266,7 +266,13 @@ pub(crate) async fn resolve_identity_oauth_login_user(
     let email_verified = email.is_some() && claims.email_verified;
     let user = state
         .data
-        .create_oauth_auth_user(email, email_verified, username, now)
+        .create_oauth_auth_user_with_display_name(
+            email,
+            email_verified,
+            username,
+            now,
+            claims.display_name.clone(),
+        )
         .await
         .map_err(repo_data_error)?
         .ok_or_else(|| IdentityOAuthAccountError::Storage("oauth user not created".to_string()))?;

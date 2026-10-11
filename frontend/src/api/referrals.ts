@@ -18,8 +18,10 @@ export interface ReferralRelationshipRecord {
   id: string
   inviter_user_id: string
   inviter_username?: string | null
+  inviter_display_name?: string | null
   invitee_user_id: string
   invitee_username?: string | null
+  invitee_display_name?: string | null
   invite_code_snapshot: string
   first_paid_order_id?: string | null
   first_paid_at_unix_secs?: number | null

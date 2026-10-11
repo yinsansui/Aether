@@ -1856,7 +1856,9 @@ async fn gateway_handles_admin_stats_leaderboard_users_locally_with_trusted_admi
         ),
     ]));
     let user_repository = Arc::new(InMemoryUserReadRepository::seed(vec![
-        sample_user_summary("user-1", "alice", "user", true),
+        sample_user_summary("user-1", "alice", "user", true)
+            .with_display_name(Some("张三".to_string()))
+            .expect("display name should be valid"),
         sample_user_summary("user-admin", "root", "admin", true),
     ]));
     let data_state = GatewayDataState::with_usage_reader_for_tests(usage_repository)
@@ -1882,7 +1884,7 @@ async fn gateway_handles_admin_stats_leaderboard_users_locally_with_trusted_admi
     let payload: serde_json::Value = response.json().await.expect("json body should parse");
     assert_eq!(payload["total"], 1);
     assert_eq!(payload["items"][0]["id"], "user-1");
-    assert_eq!(payload["items"][0]["name"], "alice");
+    assert_eq!(payload["items"][0]["name"], "张三（alice）");
     assert_eq!(payload["items"][0]["cost"], 0.16);
     assert_eq!(payload["items"][0]["standard_cost"], 0.4);
     assert_eq!(payload["items"][0]["value"], 0.16);
@@ -1937,7 +1939,9 @@ async fn gateway_handles_admin_stats_leaderboard_users_locally_without_user_read
                 usage_repository,
             ))
             .with_auth_users_for_tests([
-                sample_auth_user("user-1", "alice", "user", true),
+                sample_auth_user("user-1", "alice", "user", true)
+                    .with_display_name(Some("张三".to_string()))
+                    .expect("display name should be valid"),
                 sample_auth_user("user-admin", "root", "admin", true),
             ]),
     );
@@ -1956,7 +1960,7 @@ async fn gateway_handles_admin_stats_leaderboard_users_locally_without_user_read
     let payload: serde_json::Value = response.json().await.expect("json body should parse");
     assert_eq!(payload["total"], 1);
     assert_eq!(payload["items"][0]["id"], "user-1");
-    assert_eq!(payload["items"][0]["name"], "alice");
+    assert_eq!(payload["items"][0]["name"], "张三（alice）");
     assert_eq!(payload["items"][0]["cost"], 0.4);
     assert_eq!(payload["items"][0]["value"], 0.4);
     assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);

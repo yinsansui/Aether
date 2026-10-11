@@ -15,7 +15,7 @@
               {{ legacyT('管理 API Keys') }}
             </h3>
             <p class="text-xs text-muted-foreground">
-              {{ legacyT('查看和管理用户的 API 密钥') }}
+              {{ userName ? `${userName} · ` : '' }}{{ legacyT('查看和管理用户的 API 密钥') }}
             </p>
           </div>
         </div>
@@ -180,6 +180,7 @@ import type { ApiKey } from '@/api/users'
 
 defineProps<{
   open: boolean
+  userName?: string
   apiKeys: ApiKey[]
   creating: boolean
   formatRateLimit: (rateLimit?: number | null) => string

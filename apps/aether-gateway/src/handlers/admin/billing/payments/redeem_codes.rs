@@ -141,6 +141,7 @@ fn build_code_payload(
         "status": code.status,
         "redeemed_by_user_id": code.redeemed_by_user_id,
         "redeemed_by_user_name": code.redeemed_by_user_name,
+        "redeemed_by_user_display_name": code.redeemed_by_user_display_name,
         "redeemed_wallet_id": code.redeemed_wallet_id,
         "redeemed_payment_order_id": code.redeemed_payment_order_id,
         "redeemed_order_no": code.redeemed_order_no,

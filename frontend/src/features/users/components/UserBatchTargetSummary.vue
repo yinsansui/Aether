@@ -34,7 +34,7 @@
         variant="outline"
         class="bg-background/70 text-[11px]"
       >
-        {{ item.username }}
+        {{ userIdentityLabel(item) }}
       </Badge>
       <span
         v-if="impactCount > previewItems.length"
@@ -47,6 +47,7 @@
 </template>
 
 <script setup lang="ts">
+import { userIdentityLabel } from '@/utils/userIdentity'
 import { Badge } from '@/components/ui'
 import { UsersRound } from 'lucide-vue-next'
 import { useI18n } from '@/i18n'

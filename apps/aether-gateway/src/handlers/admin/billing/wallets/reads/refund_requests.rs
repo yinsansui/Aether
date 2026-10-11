@@ -1,7 +1,8 @@
 use super::super::shared::{
-    admin_wallet_payout_proof_projection, build_admin_wallets_bad_request_response,
-    parse_admin_wallets_limit, parse_admin_wallets_offset, parse_admin_wallets_owner_type_filter,
-    resolve_admin_wallet_owner_summary, wallet_owner_summary_from_fields,
+    admin_wallet_identity_name, admin_wallet_payout_proof_projection,
+    build_admin_wallets_bad_request_response, parse_admin_wallets_limit,
+    parse_admin_wallets_offset, parse_admin_wallets_owner_type_filter,
+    resolve_admin_wallet_user_identities, wallet_owner_summary_from_fields,
     ADMIN_WALLETS_API_KEY_REFUND_DETAIL,
 };
 use crate::handlers::admin::request::{AdminAppState, AdminRequestContext};
@@ -39,25 +40,29 @@ pub(in super::super) async fn build_admin_wallet_refund_requests_response(
     let (refunds, total) = state
         .list_admin_wallet_refund_requests(status.as_deref(), limit, offset)
         .await?;
+    let users = resolve_admin_wallet_user_identities(
+        state,
+        refunds.iter().map(|refund| {
+            (
+                refund.wallet_user_id.as_deref(),
+                refund.wallet_user_name.as_deref(),
+            )
+        }),
+    )
+    .await?;
     let mut items = Vec::with_capacity(refunds.len());
     for refund in refunds {
         let payout_proof = admin_wallet_payout_proof_projection(refund.payout_proof.as_ref());
-        let mut owner = wallet_owner_summary_from_fields(
+        let owner = wallet_owner_summary_from_fields(
             refund.wallet_user_id.as_deref(),
-            refund.wallet_user_name.clone(),
+            admin_wallet_identity_name(
+                refund.wallet_user_name.clone(),
+                refund.wallet_user_id.as_deref(),
+                &users,
+            ),
             refund.wallet_api_key_id.as_deref(),
             refund.api_key_name.clone(),
         );
-        if owner.owner_name.is_none() {
-            if let Some(wallet) = state
-                .find_wallet(aether_data::repository::wallet::WalletLookupKey::WalletId(
-                    &refund.wallet_id,
-                ))
-                .await?
-            {
-                owner = resolve_admin_wallet_owner_summary(state, &wallet).await?;
-            }
-        }
         items.push(json!({
             "id": refund.id,
             "refund_no": refund.refund_no,

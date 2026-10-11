@@ -2,16 +2,16 @@
   <div class="flex items-center gap-3">
     <Avatar class="h-10 w-10 flex-shrink-0 ring-2 ring-background shadow-md">
       <AvatarFallback class="bg-primary text-sm font-bold text-white">
-        {{ row.user.username.charAt(0).toUpperCase() }}
+        {{ userAvatarText(row.user) }}
       </AvatarFallback>
     </Avatar>
     <div class="min-w-0 flex-1">
       <div class="mb-1 flex items-center gap-1.5">
         <div
           class="truncate text-sm font-semibold"
-          :title="row.user.username"
+          :title="userIdentityLabel(row.user)"
         >
-          {{ row.user.username }}
+          {{ userIdentityLabel(row.user) }}
         </div>
         <Badge
           :variant="row.roleBadgeVariant"
@@ -24,7 +24,7 @@
         class="truncate text-xs text-muted-foreground"
         :title="row.user.email || '-'"
       >
-        {{ row.user.email || '-' }}
+        {{ legacyT('邮箱') }}：{{ row.user.email || '-' }}
       </div>
       <div
         v-if="showGroups && row.user.groups?.length"
@@ -49,6 +49,7 @@ import Avatar from '@/components/ui/avatar.vue'
 import AvatarFallback from '@/components/ui/avatar-fallback.vue'
 import { useI18n } from '@/i18n'
 import type { UserManagementRow } from './user-management-types'
+import { userAvatarText, userIdentityLabel } from '@/utils/userIdentity'
 
 withDefaults(defineProps<{
   row: UserManagementRow

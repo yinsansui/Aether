@@ -98,6 +98,17 @@ pub(in super::super) async fn build_admin_create_user_response(
                 .into_response())
         }
     };
+    let display_name =
+        match aether_data::repository::users::normalize_user_display_name(payload.display_name) {
+            Ok(value) => value,
+            Err(err) => {
+                return Ok((
+                    http::StatusCode::BAD_REQUEST,
+                    Json(json!({"detail": err.to_string()})),
+                )
+                    .into_response())
+            }
+        };
     let role = match normalize_admin_user_role(payload.role.as_deref()) {
         Ok(value) => value,
         Err(detail) => {
@@ -196,7 +207,7 @@ pub(in super::super) async fn build_admin_create_user_response(
     };
 
     let Some(user) = state
-        .create_local_auth_user_with_settings(
+        .create_local_auth_user_with_settings_and_display_name(
             email,
             false,
             username,
@@ -206,6 +217,7 @@ pub(in super::super) async fn build_admin_create_user_response(
             None,
             None,
             None,
+            display_name,
         )
         .await?
     else {

@@ -56,6 +56,7 @@ pub(in super::super) async fn build_admin_wallet_process_refund_response(
                 "wallet": wallet_payload,
                 "refund": build_admin_wallet_refund_payload(&wallet, &owner, &refund),
                 "transaction": build_admin_wallet_transaction_payload(
+                    state,
                     &wallet,
                     &owner,
                     transaction.id,
@@ -73,7 +74,7 @@ pub(in super::super) async fn build_admin_wallet_process_refund_response(
                     transaction.operator_id.as_deref(),
                     transaction.description.as_deref(),
                     unix_secs_to_rfc3339(stored_timestamp_unix_secs(transaction.created_at_unix_ms)),
-                ),
+                ).await?,
             }))
             .into_response();
             Ok(attach_admin_audit_response(

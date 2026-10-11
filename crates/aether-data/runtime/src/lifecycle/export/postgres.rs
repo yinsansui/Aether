@@ -681,7 +681,21 @@ pub(super) fn normalize_postgres_import_payload(
             }
             normalized.insert(
                 column_name.clone(),
-                normalize_postgres_import_value(table_name, column_name, target_column, value)?,
+                if domain == ExportDomain::Users && column_name == "display_name" {
+                    let name = match value {
+                        Value::Null => None,
+                        Value::String(name) => Some(name.clone()),
+                        _ => {
+                            return Err(DataLayerError::InvalidInput(
+                                "姓名必须为字符串或 null".to_string(),
+                            ))
+                        }
+                    };
+                    crate::repository::users::normalize_user_display_name(name)?
+                        .map_or(Value::Null, Value::String)
+                } else {
+                    normalize_postgres_import_value(table_name, column_name, target_column, value)?
+                },
             );
             continue;
         }

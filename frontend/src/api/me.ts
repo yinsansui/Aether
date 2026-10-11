@@ -15,6 +15,7 @@ export interface Profile {
   id: string // UUID
   email?: string | null
   username: string
+  display_name?: string | null
   role: string
   is_active: boolean
   billing: BillingSummary

@@ -159,6 +159,7 @@ pub(super) async fn build_admin_monitoring_cache_affinities_response(
         });
         let user_id_text = user_id.clone();
         let username = user.map(|item| item.username.clone());
+        let display_name = user.and_then(|item| item.display_name.clone());
         let email = user.and_then(|item| item.email.clone());
         let provider_id = affinity.provider_id.clone();
         let key_id = affinity.key_id.clone();
@@ -170,6 +171,7 @@ pub(super) async fn build_admin_monitoring_cache_affinities_response(
                     user_api_key_name.as_deref(),
                     user_id_text.as_deref(),
                     username.as_deref(),
+                    display_name.as_deref(),
                     email.as_deref(),
                     provider_id.as_deref(),
                     key_id.as_deref(),
@@ -191,6 +193,7 @@ pub(super) async fn build_admin_monitoring_cache_affinities_response(
             "is_standalone": user_api_key.map(|item| item.is_standalone).unwrap_or(false),
             "user_id": user_id_text,
             "username": username,
+            "display_name": display_name,
             "email": email,
             "provider_id": provider_id,
             "provider_name": provider_name,
@@ -266,51 +269,65 @@ pub(super) async fn build_admin_monitoring_cache_affinity_response(
         list_admin_monitoring_cache_affinity_records_by_affinity_keys(state, &direct_affinity_keys)
             .await?;
 
-    let (resolved_user_id, username, email, filtered_affinities) = if !direct_affinities.is_empty()
-        || direct_api_key_by_id.contains_key(&user_identifier)
-    {
-        let user_id = direct_api_key_by_id
-            .get(&user_identifier)
-            .map(|item| item.user_id.clone());
-        let user = match user_id.as_deref() {
-            Some(user_id) => admin_monitoring_find_user_summary_by_id(state, user_id).await?,
-            None => None,
+    let (resolved_user_id, username, display_name, email, filtered_affinities) =
+        if !direct_affinities.is_empty() || direct_api_key_by_id.contains_key(&user_identifier) {
+            let user_id = direct_api_key_by_id
+                .get(&user_identifier)
+                .map(|item| item.user_id.clone());
+            let user = match user_id.as_deref() {
+                Some(user_id) => admin_monitoring_find_user_summary_by_id(state, user_id).await?,
+                None => None,
+            };
+            let display_name = user.as_ref().and_then(|item| item.display_name.clone());
+            let email = user.as_ref().and_then(|item| item.email.clone());
+            (
+                user_id,
+                user.as_ref().map(|item| item.username.clone()),
+                display_name,
+                email,
+                direct_affinities,
+            )
+        } else if let Some(user) = state.find_user_auth_by_identifier(&user_identifier).await? {
+            let user_api_key_ids = state
+                .list_auth_api_key_export_records_by_user_ids(std::slice::from_ref(&user.id))
+                .await?
+                .into_iter()
+                .map(|item| item.api_key_id)
+                .collect::<std::collections::BTreeSet<_>>();
+            let affinities = list_admin_monitoring_cache_affinity_records_by_affinity_keys(
+                state,
+                &user_api_key_ids,
+            )
+            .await?;
+            (
+                Some(user.id),
+                Some(user.username),
+                user.display_name,
+                user.email,
+                affinities,
+            )
+        } else {
+            return Ok(admin_monitoring_cache_affinity_not_found_response(
+                &user_identifier,
+            ));
         };
-        (
-            user_id,
-            user.as_ref().map(|item| item.username.clone()),
-            user.and_then(|item| item.email),
-            direct_affinities,
-        )
-    } else if let Some(user) = state.find_user_auth_by_identifier(&user_identifier).await? {
-        let user_api_key_ids = state
-            .list_auth_api_key_export_records_by_user_ids(std::slice::from_ref(&user.id))
-            .await?
-            .into_iter()
-            .map(|item| item.api_key_id)
-            .collect::<std::collections::BTreeSet<_>>();
-        let affinities =
-            list_admin_monitoring_cache_affinity_records_by_affinity_keys(state, &user_api_key_ids)
-                .await?;
-        (Some(user.id), Some(user.username), user.email, affinities)
-    } else {
-        return Ok(admin_monitoring_cache_affinity_not_found_response(
-            &user_identifier,
-        ));
-    };
 
     if filtered_affinities.is_empty() {
-        let display_name = username.clone().unwrap_or_else(|| user_identifier.clone());
+        let user_label = aether_data_contracts::repository::users::format_user_identity_label(
+            username.as_deref().unwrap_or(&user_identifier),
+            display_name.as_deref(),
+        );
         return Ok(Json(json!({
             "status": "not_found",
             "message": format!(
                 "用户 {} ({}) 没有缓存亲和性",
-                display_name,
+                user_label,
                 email.clone().unwrap_or_else(|| "null".to_string()),
             ),
             "user_info": {
                 "user_id": resolved_user_id,
                 "username": username,
+                "display_name": display_name,
                 "email": email,
             },
             "affinities": [],
@@ -350,6 +367,7 @@ pub(super) async fn build_admin_monitoring_cache_affinity_response(
         "user_info": {
             "user_id": resolved_user_id,
             "username": username,
+            "display_name": display_name,
             "email": email,
         },
         "affinities": affinities,

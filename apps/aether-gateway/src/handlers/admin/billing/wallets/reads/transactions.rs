@@ -1,7 +1,9 @@
 use super::super::shared::{
-    admin_wallet_id_from_suffix_path, build_admin_wallet_not_found_response,
-    build_admin_wallet_summary_payload_with_package, build_admin_wallets_bad_request_response,
-    parse_admin_wallets_limit, parse_admin_wallets_offset, resolve_admin_wallet_owner_summary,
+    admin_wallet_id_from_suffix_path, admin_wallet_identity_name,
+    build_admin_wallet_not_found_response, build_admin_wallet_summary_payload_with_package,
+    build_admin_wallets_bad_request_response, parse_admin_wallets_limit,
+    parse_admin_wallets_offset, resolve_admin_wallet_owner_summary,
+    resolve_admin_wallet_user_identities,
 };
 use crate::handlers::admin::request::{AdminAppState, AdminRequestContext};
 use crate::handlers::admin::shared::unix_secs_to_rfc3339;
@@ -46,21 +48,30 @@ pub(in super::super) async fn build_admin_wallet_transactions_response(
     let (transactions, total) = state
         .list_admin_wallet_transactions(&wallet.id, limit, offset)
         .await?;
+    let operators = resolve_admin_wallet_user_identities(
+        state,
+        transactions.iter().map(|transaction| {
+            (
+                transaction.operator_id.as_deref(),
+                transaction.operator_name.as_deref(),
+            )
+        }),
+    )
+    .await?;
     let mut items = Vec::with_capacity(transactions.len());
     for transaction in transactions {
-        let (operator_name, operator_email) =
-            if transaction.operator_name.is_some() || transaction.operator_email.is_some() {
-                (transaction.operator_name, transaction.operator_email)
-            } else {
-                match transaction.operator_id.as_deref() {
-                    Some(operator_id) => state
-                        .find_user_auth_by_id(operator_id)
-                        .await?
-                        .map(|user| (Some(user.username), user.email))
-                        .unwrap_or((None, None)),
-                    None => (None, None),
-                }
-            };
+        let operator = transaction
+            .operator_id
+            .as_deref()
+            .and_then(|id| operators.get(id));
+        let operator_email = transaction
+            .operator_email
+            .or_else(|| operator.and_then(|(_, email)| email.clone()));
+        let operator_name = admin_wallet_identity_name(
+            transaction.operator_name,
+            transaction.operator_id.as_deref(),
+            &operators,
+        );
         items.push(json!({
             "id": transaction.id,
             "wallet_id": transaction.wallet_id,

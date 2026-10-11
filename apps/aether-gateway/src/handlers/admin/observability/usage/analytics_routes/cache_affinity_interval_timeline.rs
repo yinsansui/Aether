@@ -8,6 +8,7 @@ use aether_admin::observability::usage::{
     admin_usage_proportional_limits, ADMIN_USAGE_DATA_UNAVAILABLE_DETAIL,
 };
 use aether_data_contracts::repository::usage::UsageCacheAffinityIntervalGroupBy;
+use aether_data_contracts::repository::users::format_user_identity_label;
 use axum::{
     body::Body,
     response::{IntoResponse, Response},
@@ -25,7 +26,8 @@ async fn load_usage_cache_affinity_usernames(
         .await?
         .into_iter()
         .filter_map(|(user_id, user)| {
-            (!user.username.trim().is_empty()).then_some((user_id, user.username))
+            let label = format_user_identity_label(&user.username, user.display_name.as_deref());
+            (!label.is_empty()).then_some((user_id, label))
         })
         .collect())
 }

@@ -176,8 +176,11 @@
                 v-if="isAdminPage"
                 class="py-4"
               >
-                <div class="text-sm font-medium truncate">
-                  {{ token.user?.username || token.user?.email || token.user_id }}
+                <div
+                  class="text-sm font-medium truncate"
+                  :title="userIdentityLabel(token.user) || token.user?.email || token.user_id"
+                >
+                  {{ userIdentityLabel(token.user) || token.user?.email || token.user_id }}
                 </div>
                 <div
                   v-if="token.user?.email"
@@ -672,6 +675,7 @@
 </template>
 
 <script setup lang="ts">
+import { userIdentityLabel } from '@/utils/userIdentity'
 import { getI18nLocale } from '@/i18n'
 import { ref, computed, onMounted, reactive, watch } from 'vue'
 import { useRoute } from 'vue-router'

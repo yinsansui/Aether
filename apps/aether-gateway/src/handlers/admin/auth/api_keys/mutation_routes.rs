@@ -533,7 +533,17 @@ pub(super) async fn build_admin_update_api_key_response(
             ))
             .await?;
     }
-    let mut payload = build_admin_api_key_detail_payload(state, &updated, wallet.as_ref());
+    let user = state
+        .list_users_by_ids(std::slice::from_ref(&updated.user_id))
+        .await?
+        .into_iter()
+        .next();
+    let mut payload = build_admin_api_key_detail_payload(
+        state,
+        &updated,
+        wallet.as_ref(),
+        user.as_ref(),
+    );
     payload["message"] = json!("API密钥已更新");
     Ok(attach_admin_audit_response(
         Json(payload).into_response(),

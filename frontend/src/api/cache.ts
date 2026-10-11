@@ -57,6 +57,7 @@ export interface UserAffinity {
   is_standalone: boolean
   user_id: string | null
   username: string | null
+  display_name: string | null
   email: string | null
   provider_id: string
   provider_name: string | null
@@ -236,6 +237,7 @@ export const redisCacheApi = {
 export interface TTLAnalysisUser {
   group_id: string
   username: string | null
+  display_name: string | null
   email: string | null
   request_count: number
   interval_distribution: {
@@ -301,7 +303,7 @@ export interface IntervalTimelineResponse {
   analysis_period_hours: number
   total_points: number
   points: IntervalTimelinePoint[]
-  users?: Record<string, string>  // user_id -> username 映射（仅 include_user_info=true 时存在）
+  users?: Record<string, string>  // user_id -> 展示名称映射（仅 include_user_info=true 时存在）
   models?: string[]  // 出现的模型列表
 }
 

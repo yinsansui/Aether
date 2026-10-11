@@ -8,6 +8,7 @@ use aether_data_contracts::repository::billing::{
     checked_plan_duration_days_from_snapshot, entitlements_have_replacement_selector,
     entitlements_should_replace_existing,
 };
+use aether_data_contracts::repository::users::format_user_identity_label;
 use aether_data_contracts::repository::wallet::{
     canonicalize_payment_method, canonicalize_wallet_refund_fields,
     payment_callback_amount_matches_order, payment_callback_method_matches_order,
@@ -179,6 +180,7 @@ SELECT
   CAST(w.total_refunded AS DOUBLE PRECISION) AS total_refunded,
   CAST(w.total_adjusted AS DOUBLE PRECISION) AS total_adjusted,
   users.username AS user_name,
+  users.display_name AS user_display_name,
   api_keys.name AS api_key_name,
   CAST(EXTRACT(EPOCH FROM w.created_at) AS BIGINT) AS created_at_unix_ms,
   CAST(EXTRACT(EPOCH FROM w.updated_at) AS BIGINT) AS updated_at_unix_secs
@@ -230,8 +232,10 @@ SELECT
   w.api_key_id,
   w.status AS wallet_status,
   wallet_users.username AS wallet_user_name,
+  wallet_users.display_name AS wallet_user_display_name,
   api_keys.name AS api_key_name,
   operator_users.username AS operator_name,
+  operator_users.display_name AS operator_display_name,
   operator_users.email AS operator_email,
   CAST(EXTRACT(EPOCH FROM tx.created_at) AS BIGINT) AS created_at_unix_ms
 FROM wallet_transactions tx
@@ -284,6 +288,7 @@ SELECT
   w.api_key_id AS wallet_api_key_id,
   w.status AS wallet_status,
   wallet_users.username AS wallet_user_name,
+  wallet_users.display_name AS wallet_user_display_name,
   api_keys.name AS api_key_name,
   CAST(EXTRACT(EPOCH FROM rr.created_at) AS BIGINT) AS created_at_unix_ms,
   CAST(EXTRACT(EPOCH FROM rr.updated_at) AS BIGINT) AS updated_at_unix_secs,
@@ -324,6 +329,7 @@ SELECT
   tx.operator_id,
   tx.description,
   operator_users.username AS operator_name,
+  operator_users.display_name AS operator_display_name,
   operator_users.email AS operator_email,
   CAST(EXTRACT(EPOCH FROM tx.created_at) AS BIGINT) AS created_at_unix_ms
 FROM wallet_transactions tx
@@ -1525,6 +1531,7 @@ SELECT
   codes.status,
   codes.redeemed_by_user_id,
   users.username AS redeemed_by_user_name,
+  users.display_name AS redeemed_by_user_display_name,
   codes.redeemed_wallet_id,
   codes.redeemed_payment_order_id,
   orders.order_no AS redeemed_order_no,
@@ -6606,6 +6613,7 @@ SELECT
   codes.status,
   codes.redeemed_by_user_id,
   NULL::TEXT AS redeemed_by_user_name,
+  NULL::TEXT AS redeemed_by_user_display_name,
   codes.redeemed_wallet_id,
   codes.redeemed_payment_order_id,
   NULL::TEXT AS redeemed_order_no,
@@ -6976,6 +6984,7 @@ SELECT
   codes.status,
   codes.redeemed_by_user_id,
   users.username AS redeemed_by_user_name,
+  users.display_name AS redeemed_by_user_display_name,
   codes.redeemed_wallet_id,
   codes.redeemed_payment_order_id,
   orders.order_no AS redeemed_order_no,
@@ -7862,6 +7871,24 @@ where
     Ok(items)
 }
 
+// Keep the joined user columns raw until the shared identity formatter is applied.
+fn map_wallet_user_identity_label(
+    row: &PgRow,
+    username_column: &str,
+    display_name_column: &str,
+) -> Result<Option<String>, DataLayerError> {
+    let username: Option<String> = row_get(row, username_column)?;
+    let display_name: Option<String> = row_get(row, display_name_column)?;
+    Ok(if username.is_some() || display_name.is_some() {
+        Some(format_user_identity_label(
+            username.as_deref().unwrap_or_default(),
+            display_name.as_deref(),
+        ))
+    } else {
+        None
+    })
+}
+
 fn map_admin_wallet_list_item_row(
     row: &PgRow,
 ) -> Result<StoredAdminWalletListItem, DataLayerError> {
@@ -7878,7 +7905,7 @@ fn map_admin_wallet_list_item_row(
         total_consumed: row_get(row, "total_consumed")?,
         total_refunded: row_get(row, "total_refunded")?,
         total_adjusted: row_get(row, "total_adjusted")?,
-        user_name: row_get(row, "user_name")?,
+        user_name: map_wallet_user_identity_label(row, "user_name", "user_display_name")?,
         api_key_name: row_get(row, "api_key_name")?,
         created_at_unix_ms: parse_optional_timestamp(
             row_get(row, "created_at_unix_ms")?,
@@ -7909,11 +7936,19 @@ fn map_admin_wallet_ledger_item_row(
         link_type: row_get(row, "link_type")?,
         link_id: row_get(row, "link_id")?,
         operator_id: row_get(row, "operator_id")?,
-        operator_name: row_get(row, "operator_name")?,
+        operator_name: map_wallet_user_identity_label(
+            row,
+            "operator_name",
+            "operator_display_name",
+        )?,
         operator_email: row_get(row, "operator_email")?,
         description: row_get(row, "description")?,
         wallet_user_id: row_get(row, "user_id")?,
-        wallet_user_name: row_get(row, "wallet_user_name")?,
+        wallet_user_name: map_wallet_user_identity_label(
+            row,
+            "wallet_user_name",
+            "wallet_user_display_name",
+        )?,
         wallet_api_key_id: row_get(row, "api_key_id")?,
         api_key_name: row_get(row, "api_key_name")?,
         wallet_status: row_get(row, "wallet_status")?,
@@ -7948,7 +7983,11 @@ fn map_admin_wallet_refund_request_item_row(
         approved_by: row_get(row, "approved_by")?,
         processed_by: row_get(row, "processed_by")?,
         wallet_user_id: row_get(row, "wallet_user_id")?,
-        wallet_user_name: row_get(row, "wallet_user_name")?,
+        wallet_user_name: map_wallet_user_identity_label(
+            row,
+            "wallet_user_name",
+            "wallet_user_display_name",
+        )?,
         wallet_api_key_id: row_get(row, "wallet_api_key_id")?,
         api_key_name: row_get(row, "api_key_name")?,
         wallet_status: row_get(row, "wallet_status")?,
@@ -7989,7 +8028,11 @@ fn map_admin_wallet_transaction_row(
         link_type: row_get(row, "link_type")?,
         link_id: row_get(row, "link_id")?,
         operator_id: row_get(row, "operator_id")?,
-        operator_name: row_get(row, "operator_name")?,
+        operator_name: map_wallet_user_identity_label(
+            row,
+            "operator_name",
+            "operator_display_name",
+        )?,
         operator_email: row_get(row, "operator_email")?,
         description: row_get(row, "description")?,
         created_at_unix_ms: parse_optional_timestamp(
@@ -8134,6 +8177,7 @@ fn map_admin_redeem_code_row(row: &PgRow) -> Result<StoredAdminRedeemCode, DataL
         status: row_get(row, "status")?,
         redeemed_by_user_id: row_get(row, "redeemed_by_user_id")?,
         redeemed_by_user_name: row_get(row, "redeemed_by_user_name")?,
+        redeemed_by_user_display_name: row_get(row, "redeemed_by_user_display_name")?,
         redeemed_wallet_id: row_get(row, "redeemed_wallet_id")?,
         redeemed_payment_order_id: row_get(row, "redeemed_payment_order_id")?,
         redeemed_order_no: row_get(row, "redeemed_order_no")?,

@@ -69,6 +69,8 @@ pub(super) struct AdminToggleUserApiKeyLockRequest {
 #[derive(serde::Deserialize)]
 pub(super) struct AdminCreateUserRequest {
     pub(super) username: String,
+    #[serde(default)]
+    pub(super) display_name: Option<String>,
     pub(super) password: String,
     #[serde(default)]
     pub(super) email: Option<String>,
@@ -90,6 +92,8 @@ pub(super) struct AdminUpdateUserRequest {
     pub(super) email: Option<String>,
     #[serde(default)]
     pub(super) username: Option<String>,
+    #[serde(default)]
+    pub(super) display_name: Option<String>,
     #[serde(default)]
     pub(super) password: Option<String>,
     #[serde(default)]

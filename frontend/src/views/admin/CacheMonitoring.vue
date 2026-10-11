@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { userIdentityLabel } from '@/utils/userIdentity'
 import { ref, computed, nextTick, onMounted, watch, onBeforeUnmount } from 'vue'
 import Card from '@/components/ui/card.vue'
 import Button from '@/components/ui/button.vue'
@@ -250,11 +251,11 @@ function truncateMiddle(value: string, head = 8, tail = 6): string {
 }
 
 function affinityUserLabel(item: UserAffinity): string {
-  return item.username || item.email || item.user_id || '未知'
+  return userIdentityLabel(item) || item.email || item.user_id || '未知'
 }
 
 function affinityUserTitle(item: UserAffinity): string | undefined {
-  return item.email || item.username || item.user_id || undefined
+  return userIdentityLabel(item) || item.email || item.user_id || undefined
 }
 
 function affinityUserApiKeyLabel(item: UserAffinity): string {
@@ -1520,7 +1521,7 @@ onBeforeUnmount(() => {
                 </button>
               </TableCell>
               <TableCell>
-                <span class="text-sm font-medium">{{ user.username || '未知用户' }}</span>
+                <span class="text-sm font-medium">{{ userIdentityLabel(user) || '未知用户' }}</span>
               </TableCell>
               <TableCell class="text-center">
                 <span class="text-sm font-medium">{{ user.request_count }}</span>

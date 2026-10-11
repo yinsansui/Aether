@@ -4,6 +4,9 @@ export interface AuditLog {
   id: string
   event_type: string
   user_id?: number
+  user_email?: string
+  user_username?: string
+  user_display_name?: string | null
   description: string
   ip_address?: string
   status_code?: number

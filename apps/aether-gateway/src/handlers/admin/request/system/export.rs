@@ -611,6 +611,7 @@ impl<'a> AdminAppState<'a> {
                     "email": user.email.clone(),
                     "email_verified": user.email_verified,
                     "username": user.username.clone(),
+                    "display_name": user.display_name.clone(),
                     "role": user.role.clone(),
                     "allowed_providers": user.allowed_providers.clone(),
                     "allowed_providers_mode": user.allowed_providers_mode.clone(),

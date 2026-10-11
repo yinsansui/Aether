@@ -993,8 +993,10 @@ async fn gateway_handles_admin_monitoring_cache_affinity_locally_without_redis_o
     );
 
     let user_repository = Arc::new(
-        InMemoryUserReadRepository::seed_auth_users(vec![sample_monitoring_auth_user("user-1")])
-            .with_export_users(vec![sample_monitoring_export_user("user-1")]),
+        InMemoryUserReadRepository::seed_auth_users(vec![sample_monitoring_auth_user("user-1")
+            .with_display_name(Some("张三".to_string()))
+            .expect("display name should be valid")])
+        .with_export_users(vec![sample_monitoring_export_user("user-1")]),
     );
     let auth_repository = Arc::new(
         InMemoryAuthApiKeySnapshotRepository::default().with_export_records(vec![
@@ -1029,10 +1031,12 @@ async fn gateway_handles_admin_monitoring_cache_affinity_locally_without_redis_o
     let payload: serde_json::Value = response.json().await.expect("json body should parse");
     assert_eq!(payload["status"], json!("not_found"));
     assert_eq!(payload["user_info"]["user_id"], json!("user-1"));
+    assert_eq!(payload["user_info"]["username"], json!("alice"));
+    assert_eq!(payload["user_info"]["display_name"], json!("张三"));
     assert_eq!(payload["affinities"], json!([]));
     assert_eq!(
         payload["message"],
-        json!("用户 alice (alice@example.com) 没有缓存亲和性")
+        json!("用户 张三（alice） (alice@example.com) 没有缓存亲和性")
     );
     assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
 

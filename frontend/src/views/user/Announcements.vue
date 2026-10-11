@@ -156,7 +156,7 @@
                 </div>
               </TableCell>
               <TableCell class="py-4 text-sm text-muted-foreground">
-                {{ announcement.author.username }}
+                {{ userIdentityLabel(announcement.author) }}
               </TableCell>
               <TableCell class="py-4 text-xs text-muted-foreground">
                 {{ formatDate(announcement.created_at) }}
@@ -282,7 +282,7 @@
               {{ getPlainText(announcement.content) }}
             </p>
             <div class="flex items-center gap-2 text-xs text-muted-foreground">
-              <span>{{ announcement.author.username }}</span>
+              <span>{{ userIdentityLabel(announcement.author) }}</span>
               <span>·</span>
               <span>{{ formatDate(announcement.created_at) }}</span>
             </div>
@@ -560,7 +560,7 @@
         class="space-y-4"
       >
         <div class="flex items-center gap-3 text-xs text-gray-500 dark:text-muted-foreground">
-          <span>{{ viewingAnnouncement.author.username }}</span>
+          <span>{{ userIdentityLabel(viewingAnnouncement.author) }}</span>
           <span>·</span>
           <span>{{ formatFullDate(viewingAnnouncement.created_at) }}</span>
         </div>
@@ -589,6 +589,7 @@
 </template>
 
 <script setup lang="ts">
+import { userIdentityLabel } from '@/utils/userIdentity'
 import { getI18nLocale } from '@/i18n'
 import { formatRelativeTime } from '@/utils/format'
 import { ref, onMounted, computed } from 'vue'

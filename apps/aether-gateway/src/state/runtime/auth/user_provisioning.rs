@@ -655,8 +655,33 @@ impl AppState {
         initial_gift_usd: f64,
         unlimited: bool,
     ) -> Result<Option<aether_data::repository::users::StoredUserAuthRecord>, GatewayError> {
+        self.get_or_create_ldap_auth_user_with_display_name(
+            email,
+            username,
+            ldap_dn,
+            ldap_username,
+            logged_in_at,
+            initial_gift_usd,
+            unlimited,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn get_or_create_ldap_auth_user_with_display_name(
+        &self,
+        email: String,
+        username: String,
+        ldap_dn: Option<String>,
+        ldap_username: Option<String>,
+        logged_in_at: chrono::DateTime<chrono::Utc>,
+        initial_gift_usd: f64,
+        unlimited: bool,
+        display_name: Option<String>,
+    ) -> Result<Option<aether_data::repository::users::StoredUserAuthRecord>, GatewayError> {
         Ok(self
-            .get_or_create_ldap_auth_user_with_wallet_outcome(
+            .get_or_create_ldap_auth_user_with_wallet_outcome_and_display_name(
                 email,
                 username,
                 ldap_dn,
@@ -664,6 +689,7 @@ impl AppState {
                 logged_in_at,
                 initial_gift_usd,
                 unlimited,
+                display_name,
             )
             .await?
             .map(|result| result.user))
@@ -679,6 +705,31 @@ impl AppState {
         logged_in_at: chrono::DateTime<chrono::Utc>,
         initial_gift_usd: f64,
         unlimited: bool,
+    ) -> Result<Option<LdapAuthProvisioningResult>, GatewayError> {
+        self.get_or_create_ldap_auth_user_with_wallet_outcome_and_display_name(
+            email,
+            username,
+            ldap_dn,
+            ldap_username,
+            logged_in_at,
+            initial_gift_usd,
+            unlimited,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn get_or_create_ldap_auth_user_with_wallet_outcome_and_display_name(
+        &self,
+        email: String,
+        username: String,
+        ldap_dn: Option<String>,
+        ldap_username: Option<String>,
+        logged_in_at: chrono::DateTime<chrono::Utc>,
+        initial_gift_usd: f64,
+        unlimited: bool,
+        display_name: Option<String>,
     ) -> Result<Option<LdapAuthProvisioningResult>, GatewayError> {
         let Some(email) = normalize_ldap_identity_email(&email) else {
             return Ok(None);
@@ -761,6 +812,15 @@ impl AppState {
                     Some(logged_in_at),
                     Some(logged_in_at),
                 )
+                .and_then(|record| {
+                    record.with_display_name(
+                        aether_data::repository::users::normalize_user_display_name(
+                            display_name.clone(),
+                        )
+                        .ok()
+                        .flatten(),
+                    )
+                })
                 .map_err(|err| GatewayError::Internal(err.to_string()))?;
                 users.insert(user.id.clone(), user.clone());
                 user
@@ -808,7 +868,7 @@ impl AppState {
 
         let result = self
             .data
-            .get_or_create_ldap_auth_user_with_wallet_outcome(
+            .get_or_create_ldap_auth_user_with_wallet_outcome_and_display_name(
                 email,
                 username,
                 ldap_dn,
@@ -816,6 +876,7 @@ impl AppState {
                 logged_in_at,
                 initial_gift_usd,
                 unlimited,
+                display_name,
             )
             .await
             .map_err(|err| GatewayError::Internal(err.to_string()))?;

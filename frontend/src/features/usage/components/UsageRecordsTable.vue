@@ -719,11 +719,11 @@
           <TableCell
             v-if="isAdmin && isColumnVisible('user')"
             class="py-4 w-[12%] truncate"
-            :title="record.username || record.user_email || (record.user_id ? `User ${record.user_id}` : '已删除用户')"
+            :title="getRecordUserName(record)"
           >
             <div class="flex flex-col text-xs gap-0.5">
               <span class="truncate">
-                {{ record.username || record.user_email || (record.user_id ? `User ${record.user_id}` : '已删除用户') }}
+                {{ getRecordUserName(record) }}
               </span>
               <span
                 v-if="record.api_key?.name"
@@ -1061,6 +1061,7 @@
 </template>
 
 <script setup lang="ts">
+import { userIdentityLabel } from '@/utils/userIdentity'
 import { ref, computed, onBeforeUnmount, watch } from 'vue'
 import { useLocalStorage } from '@vueuse/core'
 import {
@@ -1118,6 +1119,7 @@ import UsageModelDisplay from './UsageModelDisplay.vue'
 export interface UserOption {
   id: string
   username: string
+  display_name?: string | null
   email: string
 }
 
@@ -1439,7 +1441,9 @@ function formatRecordTime(dateStr: string): string {
 }
 
 function getRecordUserName(record: UsageRecord): string {
-  return record.username || record.user_email || (record.user_id ? `User ${record.user_id}` : '已删除用户')
+  return userIdentityLabel(record)
+    || record.user_email
+    || (record.user_id ? `User ${record.user_id}` : '已删除用户')
 }
 
 function formatRecordUserProviderLine(record: UsageRecord): string {

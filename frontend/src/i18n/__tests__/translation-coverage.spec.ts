@@ -28,6 +28,16 @@ describe('translation coverage', () => {
   })
 
   it.each([
+    ['姓名', 'Name'],
+    ['登录账号', 'Login account'],
+    ['可选，支持中文姓名', 'Optional; Chinese names are supported'],
+    ['用于页面展示，不影响登录账号；留空显示登录账号', 'Used for display without changing the login account; leave empty to display the login account'],
+    ['姓名由管理员维护', 'Names are managed by administrators'],
+    ['姓名由管理员维护，如需修改请联系管理员。', 'Your name is managed by an administrator. Contact an administrator to change it.'],
+    ['姓名不能包含控制字符', 'Names cannot contain control characters'],
+    ['姓名不能超过100个字符', 'Names cannot exceed 100 characters'],
+    ['搜索姓名、登录账号或邮箱...', 'Search name, login account, or email...'],
+    ['搜索姓名、登录账号或邮箱', 'Search name, login account, or email'],
     ['暂无登录设备记录', 'No sign-in devices recorded'],
     ['请妥善保管，此令牌只会显示一次', 'Store this token securely. It is shown only once.'],
     ['给密钥起一个有意义的名称方便识别', 'Use a descriptive name to identify this key'],
