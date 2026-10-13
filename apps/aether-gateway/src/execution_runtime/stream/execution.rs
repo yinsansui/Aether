@@ -6682,10 +6682,15 @@ async fn execute_stream_from_frame_stream_with_retry_scope(
                         }
                     }
 
+                    // Doubles as the restore source for the client-visible
+                    // rewriter/normalizer after prefetch, so it must keep every
+                    // byte prefetch consumed (the 16 KiB budget plus the frame
+                    // that crossed it); bounding it with the prefetch budget
+                    // truncated the first SSE record.
                     append_stream_capture_bytes(
                         &mut provider_prefetched_body,
                         &chunk,
-                        MAX_STREAM_PREFETCH_BYTES,
+                        crate::execution_runtime::MAX_STREAM_BODY_CAPTURE_BYTES,
                         &mut provider_prefetched_body_truncated,
                     );
                     append_stream_capture_bytes(
