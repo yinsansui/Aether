@@ -56,6 +56,9 @@ pub(crate) fn apply_deepseek_tool_call_thinking_compat(
     }
 
     match crate::ai_serving::normalize_api_format_alias(provider_api_format).as_str() {
+        "openai:responses" => {
+            apply_deepseek_responses_thinking_compat(provider_request_body, original_request_body);
+        }
         "openai:chat" => {
             apply_deepseek_openai_chat_thinking_compat(provider_request_body, original_request_body)
         }
@@ -64,6 +67,15 @@ pub(crate) fn apply_deepseek_tool_call_thinking_compat(
             original_request_body,
         ),
         _ => {}
+    }
+}
+
+pub(crate) fn apply_deepseek_responses_thinking_compat(
+    provider_request_body: &mut Value,
+    original_request_body: Option<&Value>,
+) {
+    if source_disables_thinking(original_request_body, provider_request_body) {
+        set_deepseek_thinking_type(provider_request_body, "disabled");
     }
 }
 
@@ -392,18 +404,53 @@ mod tests {
             None, policy,
         ).expect("third-party DeepSeek finalization");
         assert_eq!(
-            provider_body["input"],
+            provider_body["input"].as_array().unwrap()[1..],
             json!([
                 request["input"][0],
                 request["input"][2],
                 request["input"][1]
             ])
+            .as_array()
+            .unwrap()[..]
         );
+        assert_eq!(provider_body["input"][0]["content"][0]["text"], " ");
         assert_eq!(
             provider_body["future_request_field"],
             request["future_request_field"]
         );
         assert_eq!(request["input"][1]["role"], "developer");
+    }
+
+    #[test]
+    fn deepseek_responses_keeps_source_thinking_disabled_after_body_edits() {
+        let original = json!({"reasoning": {"effort": "none"}});
+        let mut body = json!({"model": "deepseek-flash", "reasoning": {"effort": "high"}, "input": [
+            {"type": "reasoning", "summary": [{"type": "summary_text", "text": "summary"}]},
+            {"type": "function_call", "call_id": "a", "name": "lookup", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "a", "output": "ok"}
+        ]});
+        apply_deepseek_tool_call_thinking_compat(
+            &mut body,
+            "custom",
+            "https://relay.example.com",
+            "openai:responses",
+            Some(&original),
+        );
+        assert_eq!(body["thinking"]["type"], "disabled");
+        crate::ai_serving::finalize_openai_provider_request_with_codex_model_capabilities_and_reasoning_replay_policy(
+            &mut body,
+            crate::ai_serving::OpenAiProviderRequestFinalization {
+                source_api_format: "openai:responses", provider_api_format: "openai:responses",
+                provider_type: "custom", provider_model: "deepseek-flash", source_model: "deepseek-flash",
+                body_rules: None, upstream_is_stream: true, require_body_stream_field: false,
+            }, None, crate::ai_serving::OpenAiResponsesReasoningReplayPolicy::DeepSeekOpaque,
+        ).expect("disabled DeepSeek thinking");
+        assert_eq!(body["input"].as_array().unwrap().len(), 2);
+        assert!(body["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["type"] != "reasoning"));
     }
 
     #[test]

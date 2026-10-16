@@ -3,6 +3,7 @@ use serde_json::Value;
 
 pub mod codex;
 pub mod compact_synthesis;
+mod deepseek_reasoning;
 pub(crate) mod history;
 pub mod request;
 pub mod response;
@@ -10,10 +11,24 @@ pub mod spec;
 pub mod stream;
 mod tool_replay;
 
+pub(crate) use deepseek_reasoning::{
+    deepseek_responses_thinking_enabled, normalize_deepseek_reasoning_steps,
+    normalize_deepseek_reasoning_text,
+};
 pub use tool_replay::{
     normalize_openai_responses_tool_replay, OpenAiResponsesToolReplayNormalization,
     OpenAiResponsesToolReplayPolicy,
 };
+
+pub(crate) fn is_normal_deepseek_responses_request(
+    body: &Value,
+    provider_api_format: &str,
+    policy: OpenAiResponsesReasoningReplayPolicy,
+) -> bool {
+    policy == OpenAiResponsesReasoningReplayPolicy::DeepSeekOpaque
+        && crate::normalize_api_format_alias(provider_api_format) == "openai:responses"
+        && openai_responses_request_operation(provider_api_format, body).is_none()
+}
 
 const TOOL_ERROR_PREFIX: &str = "[tool error]";
 const AETHER_REASONING_ITEM_ID_PREFIX: &str = "rs_aether_";
@@ -87,6 +102,7 @@ pub(crate) fn decode_gemini_tool_signature_carrier(
 /// OpenAI reasoning references are identified by their `rs...` item IDs. DeepSeek's Responses
 /// contract instead returns opaque, id-less `reasoning_text` items whose `encrypted_content`
 /// must be sent back unchanged on later tool turns.
+/// DeepSeek also accepts id-less text-only reasoning when original state is unavailable.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum OpenAiResponsesReasoningReplayPolicy {
     #[default]
@@ -237,7 +253,8 @@ fn openai_responses_reasoning_item_is_replayable(
         return false;
     }
     if policy == OpenAiResponsesReasoningReplayPolicy::DeepSeekOpaque
-        && deepseek_opaque_reasoning_item_is_replayable(object)
+        && (deepseek_opaque_reasoning_item_is_replayable(object)
+            || deepseek_text_reasoning_item_is_replayable(object))
     {
         return true;
     }
@@ -256,6 +273,20 @@ fn openai_responses_reasoning_item_is_replayable(
         .get("encrypted_content")
         .and_then(Value::as_str)
         .is_some_and(|encrypted_content| !encrypted_content.trim().is_empty())
+}
+
+fn deepseek_text_reasoning_item_is_replayable(object: &serde_json::Map<String, Value>) -> bool {
+    !object.contains_key("id")
+        && !object.contains_key("encrypted_content")
+        && object
+            .get("content")
+            .and_then(Value::as_array)
+            .is_some_and(|parts| {
+                parts.iter().any(|part| {
+                    part.get("type").and_then(Value::as_str) == Some("reasoning_text")
+                        && part.get("text").is_some_and(Value::is_string)
+                })
+            })
 }
 
 fn deepseek_opaque_reasoning_item_is_replayable(object: &serde_json::Map<String, Value>) -> bool {
@@ -573,7 +604,7 @@ mod tests {
     }
 
     #[test]
-    fn deepseek_policy_does_not_preserve_unbound_reasoning_summaries() {
+    fn deepseek_policy_accepts_text_but_filters_unconverted_summaries() {
         let mut body = json!({
             "input": [
                 {
@@ -594,9 +625,10 @@ mod tests {
                 "openai:responses",
                 OpenAiResponsesReasoningReplayPolicy::DeepSeekOpaque,
             ),
-            2
+            1
         );
-        assert_eq!(body["input"].as_array().map(Vec::len), Some(0));
+        assert_eq!(body["input"].as_array().map(Vec::len), Some(1));
+        assert_eq!(body["input"][0]["content"][0]["text"], "missing state");
     }
 
     #[test]

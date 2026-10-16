@@ -641,8 +641,10 @@ fn build_same_format_provider_request_body_inner(
             "input",
             SameFormatProviderCompatibilityEditAction::ProviderCompatibilityRewrite,
             format!(
-                "normalized DeepSeek tool replay: moved {} output(s), replayed {} same-turn reasoning item(s)",
+                "normalized DeepSeek replay: moved {} output(s), replayed {} reasoning item(s), converted {} summaries, added {} placeholders, reordered {} steps",
                 tool_replay.reordered_tool_outputs, tool_replay.replayed_reasoning_items,
+                tool_replay.summary_reasoning_items, tool_replay.placeholder_reasoning_items,
+                tool_replay.reordered_reasoning_steps,
             ),
         );
     }
@@ -652,6 +654,9 @@ fn build_same_format_provider_request_body_inner(
             reordered_tool_outputs = tool_replay.reordered_tool_outputs,
             replayed_reasoning_items = tool_replay.replayed_reasoning_items,
             skipped_tool_batches = tool_replay.skipped_tool_batches,
+            summary_reasoning_items = tool_replay.summary_reasoning_items,
+            placeholder_reasoning_items = tool_replay.placeholder_reasoning_items,
+            reordered_reasoning_steps = tool_replay.reordered_reasoning_steps,
             "normalized provider-bound Responses tool history"
         );
     }
@@ -2428,9 +2433,8 @@ mod tests {
                 json!([
                     wire_input[0],
                     wire_input[1],
-                    wire_input[5],
-                    wire_input[0],
                     wire_input[2],
+                    wire_input[5],
                     wire_input[4],
                     wire_input[3]
                 ])
@@ -2446,10 +2450,8 @@ mod tests {
                 edit.field == "input"
                     && edit.action
                         == SameFormatProviderCompatibilityEditAction::ProviderCompatibilityRewrite
-                    && edit.detail.contains("moved 2 output(s)")
-                    && edit
-                        .detail
-                        .contains("replayed 1 same-turn reasoning item(s)")
+                    && edit.detail.contains("moved 1 output(s)")
+                    && edit.detail.contains("replayed 0 reasoning item(s)")
             }));
             assert_eq!(request["input"][0]["role"], "user");
         }
@@ -2486,7 +2488,7 @@ mod tests {
     }
 
     #[test]
-    fn same_format_tool_replay_rejects_reasoning_expansion_over_budget() {
+    fn same_format_grouped_tool_replay_preserves_large_reasoning_without_expansion() {
         let request = json!({"model": "deepseek-flash", "input": [
             {"type": "reasoning", "encrypted_content": "x".repeat(8 * 1024 * 1024), "content": [{"type": "reasoning_text", "text": "thinking"}]},
             {"type": "function_call", "call_id": "a", "name": "lookup", "arguments": "{}"},
@@ -2506,7 +2508,8 @@ mod tests {
                 },
                 aether_ai_formats::OpenAiResponsesReasoningReplayPolicy::DeepSeekOpaque,
             );
-            assert!(output.is_none());
+            let output = output.expect("grouped replay does not duplicate large reasoning");
+            assert_eq!(output.body["input"], request["input"]);
             assert_eq!(request["input"].as_array().unwrap().len(), 5);
         }
     }

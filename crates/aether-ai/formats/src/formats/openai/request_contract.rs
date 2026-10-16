@@ -164,12 +164,26 @@ fn finalize_openai_provider_request_with_codex_model_capabilities_and_reasoning_
         body,
         finalization.provider_api_format,
     );
+    let repair_deepseek_reasoning =
+        super::responses::is_normal_deepseek_responses_request(
+            body,
+            finalization.provider_api_format,
+            reasoning_replay_policy,
+        ) && super::responses::deepseek_responses_thinking_enabled(body);
+    let mut reasoning_text_repair =
+        super::responses::OpenAiResponsesToolReplayNormalization::default();
+    if repair_deepseek_reasoning {
+        // Repair text in place before batch validation decides whether a reasoning
+        // boundary survives filtering. This keeps every original item boundary.
+        super::responses::normalize_deepseek_reasoning_text(body, &mut reasoning_text_repair)
+            .map_err(OpenAiProviderRequestContractViolation::Responses)?;
+    }
     // The planner's replay policy identifies DeepSeek even behind a third-party relay.
     // Select a separate tool-order policy so the normalization itself stays independent
     // of how opaque reasoning is filtered or whether thinking is enabled on this request.
     let tool_replay_policy = match reasoning_replay_policy {
         super::responses::OpenAiResponsesReasoningReplayPolicy::DeepSeekOpaque => {
-            super::responses::OpenAiResponsesToolReplayPolicy::DeepSeekAdjacentPairs
+            super::responses::OpenAiResponsesToolReplayPolicy::DeepSeekGroupedOutputs
         }
         super::responses::OpenAiResponsesReasoningReplayPolicy::OpenAiItemIds => {
             super::responses::OpenAiResponsesToolReplayPolicy::Preserve
@@ -181,6 +195,8 @@ fn finalize_openai_provider_request_with_codex_model_capabilities_and_reasoning_
         tool_replay_policy,
     )
     .map_err(OpenAiProviderRequestContractViolation::Responses)?;
+    tool_replay.summary_reasoning_items = reasoning_text_repair.summary_reasoning_items;
+    tool_replay.placeholder_reasoning_items = reasoning_text_repair.placeholder_reasoning_items;
     // Reasoning, including items that cannot be forwarded, delimits replay batches.
     // Pair against the original boundaries before deleting incompatible state.
     tool_replay.stripped_reasoning_items =
@@ -189,6 +205,10 @@ fn finalize_openai_provider_request_with_codex_model_capabilities_and_reasoning_
             finalization.provider_api_format,
             reasoning_replay_policy,
         );
+    if repair_deepseek_reasoning {
+        super::responses::normalize_deepseek_reasoning_steps(body, &mut tool_replay)
+            .map_err(OpenAiProviderRequestContractViolation::Responses)?;
+    }
     if finalization
         .provider_api_format
         .trim()
@@ -326,7 +346,11 @@ mod tests {
                     );
                 }
                 if policy == OpenAiResponsesReasoningReplayPolicy::DeepSeekOpaque {
-                    assert_eq!(body["input"], json!([input[0], input[2], input[1]]));
+                    assert_eq!(body["input"][0]["content"][0]["text"], " ");
+                    assert_eq!(
+                        body["input"].as_array().unwrap()[1..],
+                        [input[0].clone(), input[2].clone(), input[1].clone()]
+                    );
                 } else {
                     assert_eq!(body["input"], input);
                 }
@@ -410,6 +434,66 @@ mod tests {
     }
 
     #[test]
+    fn finalization_repairs_summary_boundaries_before_tool_batch_validation() {
+        for boundary in [
+            json!({"type": "reasoning", "summary": [{"type": "summary_text", "text": "thinking for b"}]}),
+            json!({"type": "reasoning", "content": null, "encrypted_content": null, "summary": [{"type": "summary_text", "text": "thinking for b"}]}),
+        ] {
+            let input = json!([
+                {"type": "reasoning", "encrypted_content": "state-for-a", "content": [{"type": "reasoning_text", "text": "thinking for a"}]},
+                {"type": "function_call", "call_id": "a", "name": "lookup", "arguments": "{}"},
+                boundary,
+                {"type": "function_call", "call_id": "b", "name": "lookup", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "b", "output": "b"},
+                {"type": "function_call_output", "call_id": "a", "output": "a"}
+            ]);
+            for websocket in [false, true] {
+                for upstream_is_stream in [false, true] {
+                    let mut body = json!({"model": "deepseek-flash", "previous_response_id": "resp_stored", "input": input});
+                    let finalization = OpenAiProviderRequestFinalization {
+                        source_api_format: "openai:responses",
+                        provider_api_format: "openai:responses",
+                        provider_type: "custom",
+                        provider_model: "deepseek-flash",
+                        source_model: "deepseek-flash",
+                        body_rules: None,
+                        upstream_is_stream,
+                        require_body_stream_field: true,
+                    };
+                    let finalize = |body: &mut serde_json::Value| {
+                        if websocket {
+                            finalize_openai_provider_request_with_codex_model_capabilities_and_reasoning_replay_policy_for_websocket_continuation(
+                                body, finalization, None, OpenAiResponsesReasoningReplayPolicy::DeepSeekOpaque,
+                            )
+                        } else {
+                            finalize_openai_provider_request_with_compatibility_report(
+                                body,
+                                finalization,
+                                None,
+                                OpenAiResponsesReasoningReplayPolicy::DeepSeekOpaque,
+                            )
+                            .map(|_| ())
+                        }
+                    };
+                    finalize(&mut body).expect("repairable summary boundary");
+                    assert_eq!(body["input"].as_array().unwrap().len(), 6);
+                    assert_eq!(body["input"][2]["content"][0]["text"], "thinking for b");
+                    assert_eq!(body["input"][2]["summary"], boundary["summary"]);
+                    assert_eq!(body["input"][0], input[0]);
+                    for index in [1, 3, 4, 5] {
+                        assert_eq!(body["input"][index], input[index]);
+                    }
+                    assert_eq!(body["previous_response_id"], "resp_stored");
+                    assert_eq!(body["stream"], upstream_is_stream);
+                    let once = body.clone();
+                    finalize(&mut body).expect("idempotent summary boundary");
+                    assert_eq!(body, once);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn finalization_tool_replay_filters_reasoning_between_complete_batches_idempotently() {
         let input = json!([
             {"type": "reasoning", "id": "item_before", "summary": []},
@@ -442,13 +526,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(report.stripped_reasoning_items, 2);
-        assert_eq!(report.replayed_reasoning_items, 1);
+        assert_eq!(report.replayed_reasoning_items, 0);
         assert_eq!(
             body["input"],
-            json!([
-                input[1], input[2], input[3], input[5], input[6], input[8], input[5], input[7],
-                input[9]
-            ])
+            json!([input[1], input[2], input[3], input[5], input[6], input[7], input[8], input[9]])
         );
         let once = body.clone();
         assert_eq!(
@@ -491,13 +572,14 @@ mod tests {
         .unwrap();
         assert_eq!(report.replayed_reasoning_items, 0);
         assert_eq!(report.stripped_reasoning_items, 1);
-        assert_eq!(body["input"].as_array().unwrap().len(), 4);
+        assert_eq!(report.placeholder_reasoning_items, 1);
+        assert_eq!(body["input"].as_array().unwrap().len(), 5);
         assert_eq!(body["input"][1]["call_id"], "a");
-        assert_eq!(body["input"][3]["call_id"], "b");
+        assert_eq!(body["input"][2]["call_id"], "b");
     }
 
     #[test]
-    fn finalization_tool_replay_propagates_budget_failure_for_http_and_websocket() {
+    fn finalization_grouped_replay_does_not_duplicate_large_native_reasoning() {
         for websocket in [false, true] {
             let mut body = json!({"model": "deepseek-flash", "previous_response_id": "resp_stored", "input": [
                 {"type": "reasoning", "encrypted_content": "x".repeat(8 * 1024 * 1024), "content": [{"type": "reasoning_text", "text": "thinking"}]},
@@ -517,10 +599,10 @@ mod tests {
                 upstream_is_stream: true,
                 require_body_stream_field: false,
             };
-            let error = if websocket {
+            if websocket {
                 finalize_openai_provider_request_with_codex_model_capabilities_and_reasoning_replay_policy_for_websocket_continuation(
                     &mut body, finalization, None, OpenAiResponsesReasoningReplayPolicy::DeepSeekOpaque,
-                ).unwrap_err()
+                ).expect("grouped WebSocket replay does not duplicate reasoning");
             } else {
                 finalize_openai_provider_request_with_compatibility_report(
                     &mut body,
@@ -528,12 +610,8 @@ mod tests {
                     None,
                     OpenAiResponsesReasoningReplayPolicy::DeepSeekOpaque,
                 )
-                .unwrap_err()
-            };
-            assert!(
-                matches!(error, super::OpenAiProviderRequestContractViolation::Responses(violation)
-                if violation.field == "input" && violation.reason.contains("8 MiB"))
-            );
+                .expect("grouped HTTP replay does not duplicate reasoning");
+            }
             assert_eq!(body["input"], original_input);
         }
     }

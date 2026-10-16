@@ -1173,6 +1173,39 @@ data: {\"type\":\"response.reasoning_summary_text.delta\",\"response_id\":\"resp
     }
 
     #[test]
+    fn deepseek_same_family_stream_preserves_native_reasoning_and_future_fields() {
+        let context = json!({
+            "provider_api_format": "openai:responses",
+            "client_api_format": "openai:responses",
+            "needs_conversion": true,
+            "model": "deepseek-flash",
+            "mapped_model": "deepseek-flash"
+        });
+        let native = json!({
+            "type": "reasoning", "encrypted_content": "native-state", "summary": [],
+            "content": [{"type": "reasoning_text", "text": "native reasoning"}],
+            "future_field": {"preserve": true}
+        });
+        for event_type in ["response.output_item.added", "response.output_item.done"] {
+            let event = json!({"type": event_type, "output_index": 0, "item": native});
+            let wire = format!("event: {event_type}\ndata: {event}\n\n");
+            let mut rewriter = maybe_build_ai_surface_stream_rewriter(Some(&context)).unwrap();
+            let mut output = Vec::new();
+            // Exercise carry-buffer handling as well as complete records.
+            for chunk in wire.as_bytes().chunks(13) {
+                output.extend(rewriter.push_chunk(chunk).unwrap());
+            }
+            let output = String::from_utf8(output).unwrap();
+            let payload = output
+                .lines()
+                .find_map(|line| line.strip_prefix("data: "))
+                .unwrap();
+            let actual: serde_json::Value = serde_json::from_str(payload).unwrap();
+            assert_eq!(actual["item"], native);
+        }
+    }
+
+    #[test]
     fn same_family_responses_passthrough_preserves_encrypted_content() {
         // When provider and client are both OpenAI Responses family,
         // the stream should pass through verbatim (only model name rewrite).

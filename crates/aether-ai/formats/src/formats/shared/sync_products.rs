@@ -5069,6 +5069,32 @@ mod tests {
     }
 
     #[test]
+    fn deepseek_same_format_sync_preserves_native_reasoning() {
+        let context = json!({
+            "provider_api_format": "openai:responses",
+            "client_api_format": "openai:responses",
+            "needs_conversion": false
+        });
+        let response = json!({
+            "id": "resp_native", "object": "response", "status": "completed",
+            "model": "deepseek-flash",
+            "output": [{"type": "reasoning", "encrypted_content": "native-state", "summary": [],
+                "content": [{"type": "reasoning_text", "text": "native reasoning"}],
+                "future_field": {"preserve": true}}]
+        });
+        let actual = maybe_build_openai_responses_same_family_sync_body_from_normalized_payload(
+            "openai_responses_sync_finalize",
+            200,
+            Some(&context),
+            Some(&response),
+            None,
+        )
+        .expect("same format body")
+        .expect("response body");
+        assert_eq!(actual["output"], response["output"]);
+    }
+
+    #[test]
     fn same_family_completed_metadata_uses_materialized_stream_output() {
         for terminal_response in [
             json!({

@@ -15,6 +15,7 @@ pub enum OpenAiResponsesToolReplayPolicy {
     #[default]
     Preserve,
     DeepSeekAdjacentPairs,
+    DeepSeekGroupedOutputs,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -23,11 +24,18 @@ pub struct OpenAiResponsesToolReplayNormalization {
     pub replayed_reasoning_items: usize,
     pub skipped_tool_batches: usize,
     pub stripped_reasoning_items: usize,
+    pub summary_reasoning_items: usize,
+    pub placeholder_reasoning_items: usize,
+    pub reordered_reasoning_steps: usize,
 }
 
 impl OpenAiResponsesToolReplayNormalization {
     pub fn changed(self) -> bool {
-        self.reordered_tool_outputs > 0 || self.replayed_reasoning_items > 0
+        self.reordered_tool_outputs > 0
+            || self.replayed_reasoning_items > 0
+            || self.summary_reasoning_items > 0
+            || self.placeholder_reasoning_items > 0
+            || self.reordered_reasoning_steps > 0
     }
 }
 
@@ -94,6 +102,45 @@ fn complete_batch(items: &[Value], start: usize) -> (usize, Option<BTreeMap<usiz
     (items.len(), None)
 }
 
+fn append_grouped_segment(
+    segment: &mut Vec<usize>,
+    pairs: &BTreeMap<usize, usize>,
+    replay: &mut Vec<usize>,
+) {
+    replay.extend(segment.iter().copied());
+    replay.extend(segment.iter().filter_map(|index| pairs.get(index)).copied());
+    segment.clear();
+}
+
+fn append_grouped_batch(
+    items: &[Value],
+    start: usize,
+    end: usize,
+    pairs: &BTreeMap<usize, usize>,
+    replay: &mut Vec<usize>,
+) {
+    let mut segment = Vec::new();
+    let mut saw_output = false;
+    for (index, item) in items.iter().enumerate().take(end).skip(start) {
+        match tool_key(item) {
+            Some((_, false)) => segment.push(index),
+            Some((_, true)) => saw_output = true,
+            None if !saw_output
+                && item.get("role").and_then(Value::as_str) == Some("assistant") =>
+            {
+                segment.push(index);
+            }
+            _ => {
+                // A hook closes the assistant segment. Its later calls must not
+                // inherit the previous segment's opaque reasoning.
+                append_grouped_segment(&mut segment, pairs, replay);
+                replay.push(index);
+            }
+        }
+    }
+    append_grouped_segment(&mut segment, pairs, replay);
+}
+
 #[derive(Default)]
 struct SerializedSize(usize);
 
@@ -115,17 +162,19 @@ fn serialized_size(value: &Value) -> usize {
     size.0
 }
 
-/// Pairs complete DeepSeek tool batches while preserving all other items' relative order.
+/// Normalizes complete DeepSeek tool batches using the selected replay contract.
 ///
 /// The client history is untouched: only the provider-bound body is normalized. Item IDs are
 /// local identities; tool pairing uses `call_id` and the matching call/output type instead.
+/// Grouped replay keeps each uninterrupted assistant segment together with its results;
+/// context messages remain boundaries. Adjacent replay retains the legacy bounded-copy behavior.
 pub fn normalize_openai_responses_tool_replay(
     body: &mut Value,
     provider_api_format: &str,
     policy: OpenAiResponsesToolReplayPolicy,
 ) -> Result<OpenAiResponsesToolReplayNormalization, OpenAiResponsesRequestContractViolation> {
     let mut report = OpenAiResponsesToolReplayNormalization::default();
-    if policy != OpenAiResponsesToolReplayPolicy::DeepSeekAdjacentPairs
+    if policy == OpenAiResponsesToolReplayPolicy::Preserve
         || crate::normalize_api_format_alias(provider_api_format) != "openai:responses"
         || openai_responses_request_operation(provider_api_format, body).is_some()
     {
@@ -165,6 +214,23 @@ pub fn normalize_openai_responses_tool_replay(
                 })
             });
             if let Some(pairs) = pairs {
+                if policy == OpenAiResponsesToolReplayPolicy::DeepSeekGroupedOutputs {
+                    // One uninterrupted parallel assistant turn owns one reasoning
+                    // state. Never duplicate it or carry it across a hook boundary.
+                    let start = replay.len();
+                    append_grouped_batch(items, index, end, &pairs, &mut replay);
+                    report.reordered_tool_outputs += replay[start..]
+                        .iter()
+                        .enumerate()
+                        .filter(|(offset, item)| {
+                            **item != index + offset
+                                && matches!(tool_key(&items[**item]), Some((_, true)))
+                        })
+                        .count();
+                    reasoning.clear();
+                    index = end;
+                    continue;
+                }
                 let mut calls_in_turn = 0;
                 for (offset, item) in items[index..end].iter().enumerate() {
                     let item_index = index + offset;

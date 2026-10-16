@@ -565,6 +565,14 @@ impl ResponsesWebSocketBodyNormalization {
                 require_body_stream_field,
             );
         }
+        if self.reasoning_replay_policy
+            == crate::ai_serving::OpenAiResponsesReasoningReplayPolicy::DeepSeekOpaque
+        {
+            crate::ai_serving::planner::standard::deepseek::apply_deepseek_responses_thinking_compat(
+                &mut body,
+                Some(client_event),
+            );
+        }
         let finalization = crate::ai_serving::OpenAiProviderRequestFinalization {
             source_api_format: self.client_api_format.as_str(),
             provider_api_format: self.provider_api_format.as_str(),
@@ -959,6 +967,8 @@ mod continuation_fingerprint_tests {
     #[test]
     fn websocket_deepseek_tool_replay_applies_after_rules_on_create_and_continuation() {
         let input = json!([
+            {"role": "assistant", "content": "checking"},
+            {"type": "reasoning", "summary": [{"type": "summary_text", "text": "historical summary"}]},
             {"type": "function_call", "call_id": "find", "name": "find", "arguments": "{}"},
             {"type": "message", "role": "developer", "content": "hook report"},
             {"type": "function_call_output", "call_id": "find", "output": "results"}
@@ -980,13 +990,89 @@ mod continuation_fingerprint_tests {
             let normalized = normalizer
                 .normalize_response_create(&event)
                 .expect("DeepSeek response.create body");
-            assert_eq!(normalized["input"], json!([input[0], input[2], input[1]]));
+            assert_eq!(
+                normalized["input"][0]["content"][0]["text"],
+                "historical summary"
+            );
+            assert_eq!(
+                normalized["input"].as_array().unwrap()[1..],
+                [
+                    input[0].clone(),
+                    input[2].clone(),
+                    input[4].clone(),
+                    input[3].clone()
+                ]
+            );
             assert_eq!(normalized["model"], "deepseek-v4.1-flash");
             assert_eq!(
                 normalized.get("previous_response_id"),
                 event.get("previous_response_id")
             );
             assert_eq!(event["input"][0]["role"], "user");
+        }
+    }
+
+    #[test]
+    fn websocket_deepseek_preserves_source_thinking_disabled_after_rules_and_mapping() {
+        let input = json!([
+            {"type": "reasoning", "summary": [{"type": "summary_text", "text": "historical summary"}]},
+            {"type": "function_call", "call_id": "a", "name": "lookup", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "a", "output": "ok"}
+        ]);
+        for (control, path, enabled) in [
+            (
+                json!({"thinking": {"type": "disabled"}}),
+                "thinking.type",
+                json!("enabled"),
+            ),
+            (
+                json!({"reasoning": {"effort": "none"}}),
+                "reasoning.effort",
+                json!("high"),
+            ),
+            (
+                json!({"reasoning_effort": "none"}),
+                "reasoning_effort",
+                json!("high"),
+            ),
+        ] {
+            for mapping in [false, true] {
+                let mut normalizer = ResponsesWebSocketBodyNormalization::for_tests("relay-alias")
+                    .with_reasoning_replay_policy_for_tests(
+                        OpenAiResponsesReasoningReplayPolicy::DeepSeekOpaque,
+                    );
+                if mapping {
+                    normalizer = normalizer.with_model_directive_patch_for_tests(json!({
+                        "thinking": {"type": "enabled"},
+                        "reasoning": {"effort": "high"},
+                        "reasoning_effort": "high"
+                    }));
+                } else {
+                    normalizer = normalizer.with_body_rules_for_tests(json!([
+                        {"action": "set", "path": path, "value": enabled}
+                    ]));
+                }
+                for previous_response_id in [None, Some("resp_stored")] {
+                    let mut event = control.clone();
+                    event["type"] = json!("response.create");
+                    event["model"] = json!("deepseek-flash");
+                    event["input"] = input.clone();
+                    if let Some(id) = previous_response_id {
+                        event["previous_response_id"] = json!(id);
+                    }
+                    let source = event.clone();
+                    let normalized = normalizer
+                        .normalize_response_create(&event)
+                        .expect("disabled DeepSeek response.create");
+                    assert_eq!(normalized["thinking"]["type"], "disabled");
+                    assert_eq!(normalized["input"], json!([input[1], input[2]]));
+                    assert_eq!(
+                        normalized.get("previous_response_id"),
+                        event.get("previous_response_id")
+                    );
+                    assert_eq!(event, source);
+                }
+            }
         }
     }
 

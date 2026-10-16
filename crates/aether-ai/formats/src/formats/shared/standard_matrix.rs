@@ -200,11 +200,19 @@ pub fn build_standard_request_body_with_model_directives_and_request_headers_and
         &mut provider_request_body,
         provider_api_format,
     );
-    crate::formats::openai::responses::strip_incompatible_openai_responses_reasoning_items_with_policy(
-        &mut provider_request_body,
+    // DeepSeek needs summary text and the original reasoning boundaries during
+    // finalization. Ordinary OpenAI and compaction retain their strict filter.
+    if !crate::formats::openai::responses::is_normal_deepseek_responses_request(
+        &provider_request_body,
         provider_api_format,
         reasoning_replay_policy,
-    );
+    ) {
+        crate::formats::openai::responses::strip_incompatible_openai_responses_reasoning_items_with_policy(
+            &mut provider_request_body,
+            provider_api_format,
+            reasoning_replay_policy,
+        );
+    }
     strip_openai_responses_input_content_cache_control(
         &mut provider_request_body,
         provider_api_format,
@@ -563,6 +571,43 @@ mod tests {
 
             assert_explicit_stream_flag(provider_api_format, false, &converted);
         }
+    }
+
+    #[test]
+    fn deepseek_summary_survives_builder_until_finalization() {
+        let request = json!({"model": "deepseek-flash", "input": [
+            {"type": "reasoning", "summary": [{"type": "summary_text", "text": "historical summary"}]},
+            {"type": "function_call", "call_id": "a", "name": "lookup", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "a", "output": "ok"}
+        ]});
+        let policy = OpenAiResponsesReasoningReplayPolicy::DeepSeekOpaque;
+        let mut body = build_standard_request_body_with_model_directives_and_request_headers_and_reasoning_replay_policy(
+            &request, "openai:responses", "deepseek-flash", "custom", "openai:responses",
+            "/v1/responses", true, None, None, None, false, policy,
+        ).expect("DeepSeek builder");
+        assert_eq!(body["input"], request["input"]);
+        crate::finalize_openai_provider_request_with_compatibility_report(
+            &mut body,
+            crate::OpenAiProviderRequestFinalization {
+                source_api_format: "openai:responses",
+                provider_api_format: "openai:responses",
+                provider_type: "custom",
+                provider_model: "deepseek-flash",
+                source_model: "deepseek-flash",
+                body_rules: None,
+                upstream_is_stream: true,
+                require_body_stream_field: false,
+            },
+            None,
+            policy,
+        )
+        .expect("DeepSeek finalization");
+        assert_eq!(body["input"][0]["content"][0]["text"], "historical summary");
+        assert_eq!(
+            request["input"][0]["summary"][0]["text"],
+            "historical summary"
+        );
+        assert!(request["input"][0].get("content").is_none());
     }
 
     #[test]
