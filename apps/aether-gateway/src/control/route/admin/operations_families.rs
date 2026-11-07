@@ -7,7 +7,17 @@ pub(super) fn classify_admin_operations_family_route(
     normalized_path: &str,
     normalized_path_no_trailing: &str,
 ) -> Option<ClassifiedRoute> {
-    if method == http::Method::GET
+    if method == http::Method::POST
+        && normalized_path == "/api/admin/integrations/abc-coder/api-key/ensure"
+    {
+        Some(classified(
+            "admin_proxy",
+            "users_manage",
+            "ensure_abc_coder_api_key",
+            "admin:users",
+            false,
+        ))
+    } else if method == http::Method::GET
         && matches!(
             normalized_path,
             "/api/admin/referrals" | "/api/admin/referrals/"

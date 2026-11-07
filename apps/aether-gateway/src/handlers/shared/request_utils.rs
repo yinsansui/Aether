@@ -376,6 +376,7 @@ pub(crate) fn admin_proxy_local_requires_buffered_body(
                 | (Some("security_manage"), http::Method::POST, Some("blacklist_add"))
                 | (Some("security_manage"), http::Method::POST, Some("whitelist_add"))
                 | (Some("users_manage"), http::Method::POST, Some("create_user"))
+                | (Some("users_manage"), http::Method::POST, Some("ensure_abc_coder_api_key"))
                 | (Some("users_manage"), http::Method::POST, Some("resolve_user_selection"))
                 | (Some("users_manage"), http::Method::POST, Some("batch_action_users"))
                 | (Some("users_manage"), http::Method::POST, Some("grant_user_billing_plan"))

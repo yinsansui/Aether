@@ -140,6 +140,9 @@ pub(super) async fn maybe_build_local_admin_users_routes_response(
         Some("set_default_user_group") => Ok(Some(
             build_admin_set_default_user_group_response(state, request_body).await?,
         )),
+        Some("ensure_abc_coder_api_key") => Ok(Some(
+            super::abc_coder::ensure_api_key(state, request_body).await?,
+        )),
         Some("create_user") => Ok(Some(
             build_admin_create_user_response(state, request_context, request_body).await?,
         )),

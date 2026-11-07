@@ -5,6 +5,39 @@ use crate::handlers::shared::local_proxy_route_requires_buffered_body;
 use super::{classify_control_route, headers, GatewayPublicRequestContext};
 
 #[test]
+fn classifies_abc_coder_provisioning_with_admin_auth_and_buffered_body() {
+    let headers = headers(&[]);
+    let uri: Uri = "/api/admin/integrations/abc-coder/api-key/ensure"
+        .parse()
+        .unwrap();
+    let decision = classify_control_route(&http::Method::POST, &uri, &headers).unwrap();
+    assert_eq!(decision.route_class.as_deref(), Some("admin_proxy"));
+    assert_eq!(decision.route_family.as_deref(), Some("users_manage"));
+    assert_eq!(
+        decision.route_kind.as_deref(),
+        Some("ensure_abc_coder_api_key")
+    );
+    assert_eq!(
+        decision.auth_endpoint_signature.as_deref(),
+        Some("admin:users")
+    );
+    assert!(crate::control::management_token_permissions::validate_management_token_admin_route_permission(
+        &http::Method::POST, &decision, Some(&["admin:users:write".to_string()]),
+    ).is_err());
+    assert!(crate::control::management_token_permissions::validate_management_token_admin_route_permission(
+        &http::Method::POST, &decision, Some(&["admin:users:admin".to_string()]),
+    ).is_ok());
+    let context = GatewayPublicRequestContext::from_request_parts(
+        "trace-abc-coder-provisioning",
+        &http::Method::POST,
+        &uri,
+        &headers,
+        Some(decision),
+    );
+    assert!(local_proxy_route_requires_buffered_body(&context));
+}
+
+#[test]
 fn classifies_admin_users_list_as_admin_proxy_route() {
     let headers = headers(&[]);
     let uri: Uri = "/api/admin/users".parse().expect("uri should parse");

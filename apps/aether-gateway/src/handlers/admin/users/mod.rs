@@ -2,6 +2,7 @@ use crate::handlers::admin::request::{AdminRouteRequest, AdminRouteResult};
 
 const ADMIN_USERS_DATA_UNAVAILABLE_DETAIL: &str = "Admin user management data unavailable";
 
+mod abc_coder;
 mod api_keys;
 mod batch;
 mod billing;

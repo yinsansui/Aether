@@ -23,6 +23,30 @@ const SERVER_MANAGED_AUTHORIZE_PARAMS: &[&str] = &[
 #[derive(Debug, Clone, Default)]
 pub struct CustomOidcIdentityOAuthProvider;
 
+impl CustomOidcIdentityOAuthProvider {
+    /// Maps trusted userinfo using the same attributes as an interactive login.
+    pub fn identity_from_userinfo(
+        config: &IdentityOAuthProviderConfig,
+        raw: serde_json::Value,
+    ) -> Result<ExternalIdentity, OAuthError> {
+        let subject = mapped_string(&raw, config.attribute_mapping.as_ref(), "sub")
+            .or_else(|| find_string(&raw, "id"))
+            .ok_or_else(|| OAuthError::invalid_response("userinfo response missing subject"))?;
+        Ok(ExternalIdentity {
+            provider_type: config.provider_type.clone(),
+            subject,
+            email: mapped_string(&raw, config.attribute_mapping.as_ref(), "email"),
+            email_verified: mapped_bool(&raw, config.attribute_mapping.as_ref(), "email_verified")
+                .unwrap_or(false),
+            username: mapped_string(&raw, config.attribute_mapping.as_ref(), "username"),
+            display_name: mapped_string(&raw, config.attribute_mapping.as_ref(), "display_name")
+                .or_else(|| find_string(&raw, "name")),
+            avatar_url: mapped_string(&raw, config.attribute_mapping.as_ref(), "avatar_url"),
+            raw,
+        })
+    }
+}
+
 #[async_trait]
 impl IdentityOAuthProvider for CustomOidcIdentityOAuthProvider {
     fn provider_type(&self) -> &'static str {
@@ -158,21 +182,7 @@ impl IdentityOAuthProvider for CustomOidcIdentityOAuthProvider {
             .json_body
             .or_else(|| serde_json::from_str(&response.body_text).ok())
             .ok_or_else(|| OAuthError::invalid_response("userinfo response is not json"))?;
-        let subject = mapped_string(&raw, config.attribute_mapping.as_ref(), "sub")
-            .or_else(|| find_string(&raw, "id"))
-            .ok_or_else(|| OAuthError::invalid_response("userinfo response missing subject"))?;
-        Ok(ExternalIdentity {
-            provider_type: config.provider_type.clone(),
-            subject,
-            email: mapped_string(&raw, config.attribute_mapping.as_ref(), "email"),
-            email_verified: mapped_bool(&raw, config.attribute_mapping.as_ref(), "email_verified")
-                .unwrap_or(false),
-            username: mapped_string(&raw, config.attribute_mapping.as_ref(), "username"),
-            display_name: mapped_string(&raw, config.attribute_mapping.as_ref(), "display_name")
-                .or_else(|| find_string(&raw, "name")),
-            avatar_url: mapped_string(&raw, config.attribute_mapping.as_ref(), "avatar_url"),
-            raw,
-        })
+        Self::identity_from_userinfo(config, raw)
     }
 
     fn map_identity(
@@ -225,6 +235,26 @@ mod tests {
             code_challenge: Some("server-challenge".to_string()),
             network: OAuthNetworkContext::direct_identity(),
         }
+    }
+
+    #[test]
+    fn trusted_userinfo_uses_configured_subject_instead_of_email_or_wecom_id() {
+        let mut config = config();
+        config.attribute_mapping = Some(json!({"sub":"identity.subject", "username":"oa_user_id"}));
+        let identity = CustomOidcIdentityOAuthProvider::identity_from_userinfo(&config, json!({
+            "identity":{"subject":"broker-sub"}, "oa_user_id":"wecom-id", "email":"wrong@example.test"
+        })).expect("trusted claims should map");
+        let claims = CustomOidcIdentityOAuthProvider
+            .map_identity(&config, identity)
+            .unwrap();
+        assert_eq!(claims.subject, "broker-sub");
+        assert_eq!(claims.username.as_deref(), Some("wecom-id"));
+        assert!(!claims.email_verified);
+        assert!(CustomOidcIdentityOAuthProvider::identity_from_userinfo(
+            &config,
+            json!({"email":"same@example.test"})
+        )
+        .is_err());
     }
 
     #[test]

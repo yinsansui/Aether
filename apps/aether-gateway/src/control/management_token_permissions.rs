@@ -549,7 +549,7 @@ fn access_for_route(method: &http::Method, decision: &GatewayControlDecision) ->
             | (Some("admin:modules"), Some("set_enabled"))
             | (
                 Some("admin:users"),
-                Some("reveal_user_api_key" | "create_user_api_key")
+                Some("reveal_user_api_key" | "create_user_api_key" | "ensure_abc_coder_api_key")
             )
             | (
                 Some("admin:oauth"),
