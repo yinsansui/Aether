@@ -16,7 +16,9 @@ const MIGRATIONS_TABLE_EXISTS_SQL: &str =
 const USAGE_LEGACY_BODY_REF_CLEANUP_INDEX_MIGRATION_VERSION: i64 = 20260715000000;
 const USAGE_SETTLEMENT_DASHBOARD_INDEX_MIGRATION_VERSION: i64 = 20260715130000;
 const USAGE_STALE_PENDING_CLEANUP_INDEX_MIGRATION_VERSION: i64 = 20260720000000;
-const INVALID_USAGE_LEGACY_BODY_REF_CLEANUP_INDEX_EXISTS_SQL: &str = r#"
+const WALLET_DAILY_USAGE_SNAPSHOT_TIME_INDEX_MIGRATION_VERSION: i64 = 20261124000000;
+const WALLET_DAILY_USAGE_LEGACY_TIME_INDEX_MIGRATION_VERSION: i64 = 20261124000100;
+const INVALID_CONCURRENT_INDEX_EXISTS_SQL: &str = r#"
 SELECT EXISTS (
     SELECT 1
     FROM pg_catalog.pg_class AS index_relation
@@ -25,42 +27,10 @@ SELECT EXISTS (
     JOIN pg_catalog.pg_index AS index_state
       ON index_state.indexrelid = index_relation.oid
     WHERE index_namespace.nspname = 'public'
-      AND index_relation.relname = 'idx_usage_legacy_body_ref_cleanup_created_at'
+      AND index_relation.relname = $1
       AND NOT index_state.indisvalid
 )
 "#;
-const DROP_USAGE_LEGACY_BODY_REF_CLEANUP_INDEX_SQL: &str =
-    "DROP INDEX CONCURRENTLY IF EXISTS public.idx_usage_legacy_body_ref_cleanup_created_at";
-const INVALID_USAGE_SETTLEMENT_DASHBOARD_INDEX_EXISTS_SQL: &str = r#"
-SELECT EXISTS (
-    SELECT 1
-    FROM pg_catalog.pg_class AS index_relation
-    JOIN pg_catalog.pg_namespace AS index_namespace
-      ON index_namespace.oid = index_relation.relnamespace
-    JOIN pg_catalog.pg_index AS index_state
-      ON index_state.indexrelid = index_relation.oid
-    WHERE index_namespace.nspname = 'public'
-      AND index_relation.relname = 'idx_usage_settlement_dashboard_cover'
-      AND NOT index_state.indisvalid
-)
-"#;
-const DROP_USAGE_SETTLEMENT_DASHBOARD_INDEX_SQL: &str =
-    "DROP INDEX CONCURRENTLY IF EXISTS public.idx_usage_settlement_dashboard_cover";
-const INVALID_USAGE_STALE_PENDING_CLEANUP_INDEX_EXISTS_SQL: &str = r#"
-SELECT EXISTS (
-    SELECT 1
-    FROM pg_catalog.pg_class AS index_relation
-    JOIN pg_catalog.pg_namespace AS index_namespace
-      ON index_namespace.oid = index_relation.relnamespace
-    JOIN pg_catalog.pg_index AS index_state
-      ON index_state.indexrelid = index_relation.oid
-    WHERE index_namespace.nspname = 'public'
-      AND index_relation.relname = 'idx_usage_stale_pending_created_request'
-      AND NOT index_state.indisvalid
-)
-"#;
-const DROP_USAGE_STALE_PENDING_CLEANUP_INDEX_SQL: &str =
-    "DROP INDEX CONCURRENTLY IF EXISTS public.idx_usage_stale_pending_created_request";
 
 pub type BootstrapFuture<'a> = Pin<Box<dyn Future<Output = Result<(), MigrateError>> + 'a>>;
 
@@ -234,26 +204,25 @@ async fn repair_invalid_concurrent_index(
     conn: &mut PgConnection,
     migration_version: i64,
 ) -> Result<(), MigrateError> {
-    let (index_name, invalid_index_exists_sql, drop_index_sql) = match migration_version {
-        USAGE_LEGACY_BODY_REF_CLEANUP_INDEX_MIGRATION_VERSION => (
-            "idx_usage_legacy_body_ref_cleanup_created_at",
-            INVALID_USAGE_LEGACY_BODY_REF_CLEANUP_INDEX_EXISTS_SQL,
-            DROP_USAGE_LEGACY_BODY_REF_CLEANUP_INDEX_SQL,
-        ),
-        USAGE_SETTLEMENT_DASHBOARD_INDEX_MIGRATION_VERSION => (
-            "idx_usage_settlement_dashboard_cover",
-            INVALID_USAGE_SETTLEMENT_DASHBOARD_INDEX_EXISTS_SQL,
-            DROP_USAGE_SETTLEMENT_DASHBOARD_INDEX_SQL,
-        ),
-        USAGE_STALE_PENDING_CLEANUP_INDEX_MIGRATION_VERSION => (
-            "idx_usage_stale_pending_created_request",
-            INVALID_USAGE_STALE_PENDING_CLEANUP_INDEX_EXISTS_SQL,
-            DROP_USAGE_STALE_PENDING_CLEANUP_INDEX_SQL,
-        ),
+    let index_name = match migration_version {
+        USAGE_LEGACY_BODY_REF_CLEANUP_INDEX_MIGRATION_VERSION => {
+            "idx_usage_legacy_body_ref_cleanup_created_at"
+        }
+        USAGE_SETTLEMENT_DASHBOARD_INDEX_MIGRATION_VERSION => {
+            "idx_usage_settlement_dashboard_cover"
+        }
+        USAGE_STALE_PENDING_CLEANUP_INDEX_MIGRATION_VERSION => {
+            "idx_usage_stale_pending_created_request"
+        }
+        WALLET_DAILY_USAGE_SNAPSHOT_TIME_INDEX_MIGRATION_VERSION => {
+            "idx_usage_settlement_wallet_daily_finalized"
+        }
+        WALLET_DAILY_USAGE_LEGACY_TIME_INDEX_MIGRATION_VERSION => "idx_usage_finalized_at",
         _ => return Ok(()),
     };
 
-    let invalid_index_exists: bool = query_scalar(invalid_index_exists_sql)
+    let invalid_index_exists: bool = query_scalar(INVALID_CONCURRENT_INDEX_EXISTS_SQL)
+        .bind(index_name)
         .fetch_one(&mut *conn)
         .await?;
     if !invalid_index_exists {
@@ -265,7 +234,11 @@ async fn repair_invalid_concurrent_index(
         index = index_name,
         "dropping invalid index left by an interrupted concurrent migration"
     );
-    query(drop_index_sql).execute(&mut *conn).await?;
+    query(&format!(
+        "DROP INDEX CONCURRENTLY IF EXISTS public.{index_name}"
+    ))
+    .execute(&mut *conn)
+    .await?;
     Ok(())
 }
 
@@ -408,7 +381,13 @@ mod tests {
 
     #[test]
     fn concurrent_index_migrations_opt_out_of_transactions() {
-        for version in [20260715000000, 20260715130000, 20260720000000] {
+        for version in [
+            20260715000000,
+            20260715130000,
+            20260720000000,
+            20261124000000,
+            20261124000100,
+        ] {
             let migration = POSTGRES_MIGRATOR
                 .iter()
                 .find(|migration| migration.version == version)

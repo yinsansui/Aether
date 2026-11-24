@@ -1470,7 +1470,7 @@ fn next_usage_cleanup_run_rolls_to_next_day_after_slot() {
 #[test]
 fn next_wallet_daily_usage_aggregation_run_aligns_to_same_day_when_before_slot() {
     let timezone: Tz = "Asia/Shanghai".parse().expect("timezone should parse");
-    let now_utc = "2026-03-31T16:09:00Z"
+    let now_utc = "2026-03-31T20:29:00Z"
         .parse::<DateTime<Utc>>()
         .expect("timestamp should parse");
 
@@ -1481,13 +1481,13 @@ fn next_wallet_daily_usage_aggregation_run_aligns_to_same_day_when_before_slot()
         WALLET_DAILY_USAGE_AGGREGATION_MINUTE,
     );
 
-    assert_eq!(next.to_rfc3339(), "2026-03-31T16:10:00+00:00");
+    assert_eq!(next.to_rfc3339(), "2026-03-31T20:30:00+00:00");
 }
 
 #[test]
 fn next_wallet_daily_usage_aggregation_run_rolls_to_next_day_after_slot() {
     let timezone: Tz = "Asia/Shanghai".parse().expect("timezone should parse");
-    let now_utc = "2026-03-31T16:10:01Z"
+    let now_utc = "2026-03-31T20:30:01Z"
         .parse::<DateTime<Utc>>()
         .expect("timestamp should parse");
 
@@ -1498,5 +1498,5 @@ fn next_wallet_daily_usage_aggregation_run_rolls_to_next_day_after_slot() {
         WALLET_DAILY_USAGE_AGGREGATION_MINUTE,
     );
 
-    assert_eq!(next.to_rfc3339(), "2026-04-01T16:10:00+00:00");
+    assert_eq!(next.to_rfc3339(), "2026-04-01T20:30:00+00:00");
 }

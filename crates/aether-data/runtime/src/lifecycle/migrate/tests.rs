@@ -28,6 +28,7 @@ use crate::lifecycle::bootstrap::postgres::{
 };
 
 mod policy_nulls;
+mod wallet_daily_usage;
 
 /// A clean PostgreSQL database is bootstrapped from the schema snapshot first;
 /// migrations after the privacy/security frontier are intentionally left
@@ -1577,6 +1578,8 @@ fn pending_migrations_from_applied_skips_versions_already_applied() {
             20260908000000,
             20260929000000,
             20261008090000,
+            20261124000000,
+            20261124000100,
         ]
     );
 }
