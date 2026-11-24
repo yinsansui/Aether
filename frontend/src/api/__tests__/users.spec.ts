@@ -13,7 +13,8 @@ vi.mock('@/api/client', () => ({
   },
 }))
 
-vi.mock('@/utils/cache', () => ({
+vi.mock('@/utils/cache', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/utils/cache')>()),
   cachedRequest: cachedRequestMock,
 }))
 
@@ -51,6 +52,28 @@ describe('usersApi admin list query', () => {
         sort_order: 'desc',
       },
     })
+  })
+
+  it('requests user identities with a cache key distinct from the full list', async () => {
+    await usersApi.getAllUsersPage({ skip: 0, limit: 100 })
+    await usersApi.getAllUsersPage({ skip: 0, limit: 100, include_usage_summary: false })
+
+    expect(getMock).toHaveBeenLastCalledWith('/api/admin/users', {
+      params: { skip: 0, limit: 100, include_usage_summary: 'false' },
+    })
+    expect(cachedRequestMock.mock.calls[0][0]).not.toBe(cachedRequestMock.mock.calls[1][0])
+  })
+
+  it('keeps search values and cache suffixes isolated in the cache key', async () => {
+    await usersApi.getAllUsersPage({
+      search: ':',
+      cacheKeySuffix: 'without-usage-summary',
+    })
+    await usersApi.getAllUsersPage({
+      include_usage_summary: false,
+    })
+
+    expect(cachedRequestMock.mock.calls[0][0]).not.toBe(cachedRequestMock.mock.calls[1][0])
   })
 
   it('keeps user management renderable when the group response has no items array', async () => {

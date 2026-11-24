@@ -81,17 +81,15 @@ pub(super) fn build_admin_user_payload_with_groups(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn build_admin_user_export_payload(
     row: &aether_data::repository::users::StoredUserExportRow,
     unlimited: bool,
     created_at: Option<chrono::DateTime<chrono::Utc>>,
     last_login_at: Option<chrono::DateTime<chrono::Utc>>,
-    request_count: u64,
-    total_tokens: u64,
+    usage_totals: Option<(u64, u64)>,
     groups: &[aether_data::repository::users::StoredUserGroup],
 ) -> serde_json::Value {
-    json!({
+    let mut payload = json!({
         "id": row.id,
         "email": row.email,
         "username": row.username,
@@ -111,8 +109,6 @@ pub(super) fn build_admin_user_export_payload(
         "created_at": format_optional_datetime_iso8601(created_at),
         "updated_at": serde_json::Value::Null,
         "last_login_at": format_optional_datetime_iso8601(last_login_at),
-        "request_count": request_count,
-        "total_tokens": total_tokens,
         "groups": groups.iter().map(user_group_badge_payload).collect::<Vec<_>>(),
         "effective_policy": effective_policy_payload(
             row.allowed_providers.as_ref(),
@@ -125,7 +121,12 @@ pub(super) fn build_admin_user_export_payload(
             &row.rate_limit_mode,
             groups,
         ),
-    })
+    });
+    if let Some((request_count, total_tokens)) = usage_totals {
+        payload["request_count"] = json!(request_count);
+        payload["total_tokens"] = json!(total_tokens);
+    }
+    payload
 }
 
 pub(super) fn user_group_badge_payload(

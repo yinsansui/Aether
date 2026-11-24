@@ -210,7 +210,7 @@ function buildTimeRangeParams() {
 }
 
 async function loadUsers() {
-  users.value = await usersApi.getAllUsers()
+  users.value = await usersApi.getAllUsers({ include_usage_summary: false })
   if (!selectedUserId.value && users.value.length > 0) {
     selectedUserId.value = users.value[0].id
   }

@@ -1,5 +1,5 @@
 import apiClient from './client'
-import { cachedRequest } from '@/utils/cache'
+import { buildCacheKey, cachedRequest } from '@/utils/cache'
 import type { UserSession as SessionRecord } from '@/types/session'
 import type { BillingPlan, UserPlanEntitlement } from './billing'
 
@@ -272,6 +272,7 @@ export interface GetAllUsersOptions {
   sort_order?: AdminUserSortOrder
   skip?: number
   limit?: number
+  include_usage_summary?: boolean
   cacheTtlMs?: number
   cacheKeySuffix?: string
 }
@@ -311,21 +312,12 @@ export const usersApi = {
     if (options.sort_order) params.sort_order = options.sort_order
     if (options.skip !== undefined) params.skip = options.skip
     if (options.limit !== undefined) params.limit = options.limit
+    if (options.include_usage_summary === false) params.include_usage_summary = 'false'
 
-    const cacheKey = Object.keys(params).length === 0
-      ? 'admin:users:list'
-      : [
-          'admin:users:list',
-          search ?? '',
-          options.role ?? '',
-          options.is_active ?? '',
-          options.group_id ?? '',
-          options.sort_by ?? '',
-          options.sort_order ?? '',
-          options.skip ?? '',
-          options.limit ?? '',
-          options.cacheKeySuffix ?? '',
-        ].join(':')
+    const cacheKey = buildCacheKey('admin:users:list', {
+      ...params,
+      cacheKeySuffix: options.cacheKeySuffix,
+    })
 
     return cachedRequest(
       cacheKey,

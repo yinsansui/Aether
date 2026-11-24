@@ -8182,50 +8182,25 @@ ORDER BY api_key_id ASC
 
         let mut totals = std::collections::BTreeMap::<String, StoredUsageUserTotals>::new();
         if let Some(cutoff_utc) = self.read_stats_daily_cutoff_date().await? {
-            let mut summary_user_ids = std::collections::BTreeSet::<String>::new();
             let mut aggregate_rows = sqlx::query(
                 r#"
-SELECT
-  user_id,
-  COALESCE(all_time_requests, 0)::BIGINT AS request_count,
-  COALESCE(
-    all_time_input_tokens
-      + all_time_output_tokens
-      + all_time_cache_creation_tokens
-      + all_time_cache_read_tokens,
-    0
-  )::BIGINT AS total_tokens
-FROM stats_user_summary
-WHERE user_id = ANY($1::TEXT[])
-ORDER BY user_id ASC
-"#,
-            )
-            .bind(user_ids)
-            .fetch(&self.pool);
-
-            while let Some(row) = aggregate_rows.try_next().await.map_postgres_err()? {
-                let user_id = row.try_get::<String, _>("user_id").map_postgres_err()?;
-                let request_count = row
-                    .try_get::<i64, _>("request_count")
-                    .map_postgres_err()?
-                    .max(0) as u64;
-                let total_tokens = row
-                    .try_get::<i64, _>("total_tokens")
-                    .map_postgres_err()?
-                    .max(0) as u64;
-                summary_user_ids.insert(user_id.clone());
-                totals.insert(
-                    user_id.clone(),
-                    StoredUsageUserTotals {
-                        user_id,
-                        request_count,
-                        total_tokens,
-                    },
-                );
-            }
-
-            let mut daily_rows = sqlx::query(
-                r#"
+WITH summary_totals AS (
+  SELECT
+    user_id,
+    COALESCE(all_time_requests, 0)::BIGINT AS request_count,
+    COALESCE(
+      all_time_input_tokens
+        + all_time_output_tokens
+        + all_time_cache_creation_tokens
+        + all_time_cache_read_tokens,
+      0
+    )::BIGINT AS total_tokens
+  FROM stats_user_summary
+  WHERE user_id = ANY($1::TEXT[])
+)
+SELECT user_id, request_count, total_tokens
+FROM summary_totals
+UNION ALL
 SELECT
   user_id,
   COALESCE(SUM(total_requests), 0)::BIGINT AS request_count,
@@ -8234,21 +8209,21 @@ SELECT
     0
   )::BIGINT AS total_tokens
 FROM stats_user_daily
-WHERE user_id = ANY($1::TEXT[])
+WHERE user_id = ANY(ARRAY(
+    SELECT UNNEST($1::TEXT[])
+    EXCEPT
+    SELECT user_id::TEXT FROM summary_totals
+  ))
   AND date < $2
 GROUP BY user_id
-ORDER BY user_id ASC
 "#,
             )
             .bind(user_ids)
             .bind(cutoff_utc)
             .fetch(&self.pool);
 
-            while let Some(row) = daily_rows.try_next().await.map_postgres_err()? {
+            while let Some(row) = aggregate_rows.try_next().await.map_postgres_err()? {
                 let user_id = row.try_get::<String, _>("user_id").map_postgres_err()?;
-                if summary_user_ids.contains(&user_id) {
-                    continue;
-                }
                 let request_count = row
                     .try_get::<i64, _>("request_count")
                     .map_postgres_err()?

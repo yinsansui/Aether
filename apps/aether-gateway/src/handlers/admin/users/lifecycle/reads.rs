@@ -36,6 +36,9 @@ pub(in super::super) async fn build_admin_list_users_response(
     let group_id = query_param_value(request_context.query_string(), "group_id")
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
+    let include_usage_summary =
+        query_param_optional_bool(request_context.query_string(), "include_usage_summary")
+            .unwrap_or(true);
 
     let sort_by = query_param_value(request_context.query_string(), "sort_by")
         .and_then(|value| aether_data::repository::users::UserExportSortBy::parse(&value))
@@ -73,7 +76,13 @@ pub(in super::super) async fn build_admin_list_users_response(
     ) = tokio::join!(
         state.list_user_auth_by_ids(&user_ids),
         state.list_wallet_snapshots_by_user_ids(&user_ids),
-        state.summarize_usage_totals_by_user_ids(&user_ids),
+        async {
+            if include_usage_summary {
+                state.summarize_usage_totals_by_user_ids(&user_ids).await
+            } else {
+                Ok(Vec::new())
+            }
+        },
         state.list_user_group_memberships_by_user_ids(&user_ids),
         state.list_user_groups(),
     );
@@ -119,12 +128,11 @@ pub(in super::super) async fn build_admin_list_users_response(
             unlimited,
             auth.as_ref().and_then(|user| user.created_at),
             auth.as_ref().and_then(|user| user.last_login_at),
-            usage_totals
-                .map(|item| item.request_count)
-                .unwrap_or_default(),
-            usage_totals
-                .map(|item| item.total_tokens)
-                .unwrap_or_default(),
+            include_usage_summary.then(|| {
+                usage_totals
+                    .map(|item| (item.request_count, item.total_tokens))
+                    .unwrap_or_default()
+            }),
             &groups,
         ));
     }

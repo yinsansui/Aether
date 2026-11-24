@@ -552,6 +552,29 @@ async fn gateway_handles_admin_users_root_locally_with_trusted_admin_principal()
     assert_eq!(items[0]["request_count"], 2);
     assert_eq!(items[0]["total_tokens"], 100);
 
+    let identity_response = reqwest::Client::new()
+        .get(format!(
+            "{gateway_url}/api/admin/users?skip=0&limit=20&role=user&is_active=true&include_usage_summary=false"
+        ))
+        .header(crate::constants::GATEWAY_HEADER, "rust-phase3b")
+        .header(TRUSTED_ADMIN_USER_ID_HEADER, "admin-user-123")
+        .header(TRUSTED_ADMIN_USER_ROLE_HEADER, "admin")
+        .header(TRUSTED_ADMIN_SESSION_ID_HEADER, "session-123")
+        .send()
+        .await
+        .expect("identity request should succeed");
+    assert_eq!(identity_response.status(), StatusCode::OK);
+    let identity_payload: serde_json::Value = identity_response
+        .json()
+        .await
+        .expect("json body should parse");
+    assert_eq!(identity_payload["total"], 1);
+    let identity = &identity_payload["items"][0];
+    assert_eq!(identity["id"], "user-1");
+    assert_eq!(identity["username"], "alice");
+    assert!(identity.get("request_count").is_none());
+    assert!(identity.get("total_tokens").is_none());
+
     let search_response = reqwest::Client::new()
         .get(format!(
             "{gateway_url}/api/admin/users?skip=0&limit=20&search=carol"

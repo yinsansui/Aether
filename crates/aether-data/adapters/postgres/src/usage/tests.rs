@@ -3108,7 +3108,7 @@ fn usage_sql_summarize_usage_totals_by_user_ids_supports_user_summary_aggregates
     assert!(source.contains("all_time_input_tokens"));
     assert!(source.contains("FROM stats_user_daily"));
     assert!(source.contains("date < $2"));
-    assert!(source.contains("summary_user_ids.contains(&user_id)"));
+    assert!(source.contains("SELECT user_id::TEXT FROM summary_totals"));
 }
 
 #[test]
