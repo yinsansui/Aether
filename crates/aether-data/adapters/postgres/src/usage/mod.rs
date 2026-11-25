@@ -1421,8 +1421,13 @@ const SUMMARIZE_PROVIDER_USAGE_SINCE_SQL: &str =
 const SUMMARIZE_TOTAL_TOKENS_BY_API_KEY_IDS_SQL: &str =
     include_str!("queries/summarize_total_tokens_by_api_key_ids_sql.sql");
 
-const SUMMARIZE_USAGE_TOTALS_BY_USER_IDS_SQL: &str =
-    include_str!("queries/summarize_usage_totals_by_user_ids_sql.sql");
+const READ_STATS_DAILY_CUTOFF_SQL: &str = include_str!("queries/read_stats_daily_cutoff_sql.sql");
+const SUMMARIZE_USAGE_TOTALS_BY_USER_IDS_SQL: &str = concat!(
+    "WITH daily_cutoff AS (\n",
+    include_str!("queries/read_stats_daily_cutoff_sql.sql"),
+    "),\n",
+    include_str!("queries/summarize_usage_totals_by_user_ids_sql.sql")
+);
 
 const SUMMARIZE_USAGE_BY_PROVIDER_API_KEY_IDS_SQL: &str =
     include_str!("queries/summarize_usage_by_provider_api_key_ids_sql.sql");
@@ -2328,51 +2333,10 @@ impl SqlxUsageReadRepository {
     }
 
     async fn read_stats_daily_cutoff_date(&self) -> Result<Option<DateTime<Utc>>, DataLayerError> {
-        let row = sqlx::query(
-            r#"
-SELECT cutoff_date
-FROM stats_summary
-ORDER BY updated_at DESC, created_at DESC
-LIMIT 1
-"#,
-        )
-        .fetch_optional(&self.pool)
-        .await
-        .map_postgres_err()?;
-
-        if let Some(row) = row {
-            return row
-                .try_get::<DateTime<Utc>, _>("cutoff_date")
-                .map(Some)
-                .map_postgres_err();
-        }
-
-        let row = sqlx::query(
-            r#"
-SELECT MAX(date) AS latest_date
-FROM (
-    SELECT MAX(date) AS date
-    FROM stats_daily
-    WHERE total_requests > 0
-       OR is_complete IS TRUE
-    UNION ALL
-    SELECT MAX(date) AS date
-    FROM stats_user_daily
-    WHERE total_requests > 0
-    UNION ALL
-    SELECT MAX(date) AS date
-    FROM stats_daily_api_key
-    WHERE total_requests > 0
-) AS imported_daily_aggregates
-"#,
-        )
-        .fetch_one(&self.pool)
-        .await
-        .map_postgres_err()?;
-        let latest_date = row
-            .try_get::<Option<DateTime<Utc>>, _>("latest_date")
-            .map_postgres_err()?;
-        Ok(latest_date.map(|value| value + chrono::Duration::days(1)))
+        sqlx::query_scalar(READ_STATS_DAILY_CUTOFF_SQL)
+            .fetch_one(&self.pool)
+            .await
+            .map_postgres_err()
     }
 
     async fn read_stats_hourly_cutoff(&self) -> Result<Option<DateTime<Utc>>, DataLayerError> {
@@ -8178,118 +8142,6 @@ ORDER BY api_key_id ASC
     ) -> Result<Vec<StoredUsageUserTotals>, DataLayerError> {
         if user_ids.is_empty() {
             return Ok(Vec::new());
-        }
-
-        let mut totals = std::collections::BTreeMap::<String, StoredUsageUserTotals>::new();
-        if let Some(cutoff_utc) = self.read_stats_daily_cutoff_date().await? {
-            let mut aggregate_rows = sqlx::query(
-                r#"
-WITH summary_totals AS (
-  SELECT
-    user_id,
-    COALESCE(all_time_requests, 0)::BIGINT AS request_count,
-    COALESCE(
-      all_time_input_tokens
-        + all_time_output_tokens
-        + all_time_cache_creation_tokens
-        + all_time_cache_read_tokens,
-      0
-    )::BIGINT AS total_tokens
-  FROM stats_user_summary
-  WHERE user_id = ANY($1::TEXT[])
-)
-SELECT user_id, request_count, total_tokens
-FROM summary_totals
-UNION ALL
-SELECT
-  user_id,
-  COALESCE(SUM(total_requests), 0)::BIGINT AS request_count,
-  COALESCE(
-    SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens),
-    0
-  )::BIGINT AS total_tokens
-FROM stats_user_daily
-WHERE user_id = ANY(ARRAY(
-    SELECT UNNEST($1::TEXT[])
-    EXCEPT
-    SELECT user_id::TEXT FROM summary_totals
-  ))
-  AND date < $2
-GROUP BY user_id
-"#,
-            )
-            .bind(user_ids)
-            .bind(cutoff_utc)
-            .fetch(&self.pool);
-
-            while let Some(row) = aggregate_rows.try_next().await.map_postgres_err()? {
-                let user_id = row.try_get::<String, _>("user_id").map_postgres_err()?;
-                let request_count = row
-                    .try_get::<i64, _>("request_count")
-                    .map_postgres_err()?
-                    .max(0) as u64;
-                let total_tokens = row
-                    .try_get::<i64, _>("total_tokens")
-                    .map_postgres_err()?
-                    .max(0) as u64;
-                totals.insert(
-                    user_id.clone(),
-                    StoredUsageUserTotals {
-                        user_id,
-                        request_count,
-                        total_tokens,
-                    },
-                );
-            }
-
-            let mut builder = QueryBuilder::<Postgres>::new(
-                r#"
-SELECT
-  "usage".user_id,
-  COUNT(*)::BIGINT AS request_count,
-  COALESCE(SUM(GREATEST(COALESCE("usage".total_tokens, 0), 0)), 0)::BIGINT AS total_tokens
-FROM usage_billing_facts AS "usage"
-WHERE "usage".user_id = ANY(
-"#,
-            );
-            builder
-                .push_bind(user_ids)
-                .push("::TEXT[])")
-                .push(" AND \"usage\".created_at >= ")
-                .push_bind(cutoff_utc)
-                .push(
-                    r#"
-  AND "usage".status NOT IN ('pending', 'streaming')
-  AND "usage".provider_name NOT IN ('unknown', 'pending')
-GROUP BY "usage".user_id
-ORDER BY "usage".user_id ASC
-"#,
-                );
-
-            let mut raw_rows = builder.build().fetch(&self.pool);
-            while let Some(row) = raw_rows.try_next().await.map_postgres_err()? {
-                let user_id = row.try_get::<String, _>("user_id").map_postgres_err()?;
-                let request_count = row
-                    .try_get::<i64, _>("request_count")
-                    .map_postgres_err()?
-                    .max(0) as u64;
-                let total_tokens = row
-                    .try_get::<i64, _>("total_tokens")
-                    .map_postgres_err()?
-                    .max(0) as u64;
-                let entry =
-                    totals
-                        .entry(user_id.clone())
-                        .or_insert_with(|| StoredUsageUserTotals {
-                            user_id,
-                            request_count: 0,
-                            total_tokens: 0,
-                        });
-                entry.request_count = entry.request_count.saturating_add(request_count);
-                entry.total_tokens = entry.total_tokens.saturating_add(total_tokens);
-            }
-
-            return Ok(totals.into_values().collect());
         }
 
         let mut rows = sqlx::query(SUMMARIZE_USAGE_TOTALS_BY_USER_IDS_SQL)

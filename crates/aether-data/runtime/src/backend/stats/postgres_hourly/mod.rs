@@ -9,6 +9,8 @@ use crate::{
 };
 
 mod sql;
+#[cfg(test)]
+mod tests;
 
 use self::sql::*;
 
@@ -64,7 +66,9 @@ async fn perform_stats_hourly_aggregation_for_hour(
     aggregated_at: DateTime<Utc>,
 ) -> Result<StatsHourlyAggregationSummary, sqlx::Error> {
     let hour_end = hour_utc + chrono::Duration::hours(1);
-    let mut tx = pool.begin().await?;
+    let mut tx = pool
+        .begin_with("BEGIN ISOLATION LEVEL READ COMMITTED")
+        .await?;
 
     let row = sqlx::query(SELECT_STATS_HOURLY_AGGREGATE_SQL)
         .bind(hour_utc)
@@ -74,6 +78,14 @@ async fn perform_stats_hourly_aggregation_for_hour(
     let total_requests = row.try_get::<i64, _>("total_requests")?;
     let error_requests = row.try_get::<i64, _>("error_requests")?;
     let success_requests = total_requests.saturating_sub(error_requests);
+
+    let user_model_rows =
+        upsert_stats_hourly_user_model_rows(&mut tx, hour_utc, hour_end, aggregated_at).await?;
+    let model_rows =
+        upsert_stats_hourly_model_rows(&mut tx, hour_utc, hour_end, aggregated_at).await?;
+    let provider_rows =
+        upsert_stats_hourly_provider_rows(&mut tx, hour_utc, hour_end, aggregated_at).await?;
+
     sqlx::query(UPSERT_STATS_HOURLY_SQL)
         .bind(Uuid::new_v4().to_string())
         .bind(hour_utc)
@@ -114,14 +126,20 @@ async fn perform_stats_hourly_aggregation_for_hour(
         .execute(&mut *tx)
         .await?;
 
+    // Coordinate with deferred invalidations without waiting on active fact writers.
+    let can_publish_user_totals: bool = sqlx::query_scalar(TRY_LOCK_STATS_HOURLY_USER_TOTALS_SQL)
+        .bind(hour_utc)
+        .fetch_one(&mut *tx)
+        .await?;
     let user_rows =
         upsert_stats_hourly_user_rows(&mut tx, hour_utc, hour_end, aggregated_at).await?;
-    let user_model_rows =
-        upsert_stats_hourly_user_model_rows(&mut tx, hour_utc, hour_end, aggregated_at).await?;
-    let model_rows =
-        upsert_stats_hourly_model_rows(&mut tx, hour_utc, hour_end, aggregated_at).await?;
-    let provider_rows =
-        upsert_stats_hourly_provider_rows(&mut tx, hour_utc, hour_end, aggregated_at).await?;
+    if can_publish_user_totals {
+        sqlx::query("UPDATE stats_hourly SET user_totals_row_count = $2 WHERE hour_utc = $1")
+            .bind(hour_utc)
+            .bind(i64::try_from(user_rows).unwrap_or(i64::MAX))
+            .execute(&mut *tx)
+            .await?;
+    }
     tx.commit().await?;
 
     Ok(StatsHourlyAggregationSummary {

@@ -2833,13 +2833,12 @@ fn usage_sql_summarize_usage_daily_heatmap_supports_daily_aggregates() {
 
 #[test]
 fn usage_sql_daily_cutoff_falls_back_to_imported_stats_daily() {
-    let source = include_str!("mod.rs");
+    let source = super::READ_STATS_DAILY_CUTOFF_SQL;
     assert!(source.contains("FROM stats_summary"));
-    assert!(source.contains("SELECT MAX(date) AS latest_date"));
+    assert!(source.contains("SELECT MAX(date) + INTERVAL '24 hours'"));
     assert!(source.contains("FROM stats_daily"));
     assert!(source.contains("FROM stats_user_daily"));
     assert!(source.contains("FROM stats_daily_api_key"));
-    assert!(source.contains("value + chrono::Duration::days(1)"));
 }
 
 #[test]
@@ -3103,11 +3102,11 @@ fn dashboard_aggregate_reads_fallback_to_raw_on_schema_mismatch() {
 
 #[test]
 fn usage_sql_summarize_usage_totals_by_user_ids_supports_user_summary_aggregates() {
-    let source = include_str!("mod.rs");
+    let source = super::SUMMARIZE_USAGE_TOTALS_BY_USER_IDS_SQL;
     assert!(source.contains("FROM stats_user_summary"));
     assert!(source.contains("all_time_input_tokens"));
     assert!(source.contains("FROM stats_user_daily"));
-    assert!(source.contains("date < $2"));
+    assert!(source.contains("date < (SELECT cutoff_date FROM daily_cutoff)"));
     assert!(source.contains("SELECT user_id::TEXT FROM summary_totals"));
 }
 

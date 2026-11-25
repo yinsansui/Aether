@@ -4,7 +4,7 @@ FROM stats_hourly
 WHERE is_complete IS TRUE
 "#;
 pub(super) const SELECT_NEXT_STATS_HOURLY_BUCKET_SQL: &str = r#"
-SELECT date_trunc('hour', MIN(created_at)) AS next_bucket
+SELECT date_trunc('hour', MIN(created_at), 'UTC') AS next_bucket
 FROM usage_billing_facts AS usage
 WHERE created_at >= $1
   AND created_at < $2
@@ -322,7 +322,12 @@ DO UPDATE SET
     avg_response_time_ms = EXCLUDED.avg_response_time_ms,
     is_complete = EXCLUDED.is_complete,
     aggregated_at = EXCLUDED.aggregated_at,
+    user_totals_row_count = NULL,
     updated_at = EXCLUDED.updated_at
+"#;
+pub(super) const TRY_LOCK_STATS_HOURLY_USER_TOTALS_SQL: &str = r#"
+SELECT pg_try_advisory_xact_lock(public.stats_hourly_user_totals_lock_key($1))
+   AND pg_try_advisory_xact_lock(public.stats_hourly_user_totals_delete_lock_key())
 "#;
 pub(super) const UPSERT_STATS_HOURLY_USER_SQL: &str = r#"
 WITH aggregated AS (
@@ -342,6 +347,7 @@ WITH aggregated AS (
         ) AS BIGINT) AS error_requests,
         CAST(COALESCE(SUM(input_tokens), 0) AS BIGINT) AS input_tokens,
         CAST(COALESCE(SUM(output_tokens), 0) AS BIGINT) AS output_tokens,
+        CAST(COALESCE(SUM(GREATEST(COALESCE(total_tokens, 0), 0)), 0) AS BIGINT) AS total_tokens,
         CAST(COALESCE(
             SUM(GREATEST(COALESCE(cache_creation_input_tokens, 0), 0)),
             0
@@ -471,6 +477,7 @@ INSERT INTO stats_hourly_user (
     error_requests,
     input_tokens,
     output_tokens,
+    total_tokens,
     cache_creation_tokens,
     cache_read_tokens,
     total_cost,
@@ -497,6 +504,7 @@ SELECT
     aggregated.error_requests,
     aggregated.input_tokens,
     aggregated.output_tokens,
+    aggregated.total_tokens,
     aggregated.cache_creation_tokens,
     aggregated.cache_read_tokens,
     aggregated.total_cost,
@@ -521,6 +529,7 @@ DO UPDATE SET
     error_requests = EXCLUDED.error_requests,
     input_tokens = EXCLUDED.input_tokens,
     output_tokens = EXCLUDED.output_tokens,
+    total_tokens = EXCLUDED.total_tokens,
     cache_creation_tokens = EXCLUDED.cache_creation_tokens,
     cache_read_tokens = EXCLUDED.cache_read_tokens,
     total_cost = EXCLUDED.total_cost,

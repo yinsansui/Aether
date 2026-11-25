@@ -1,10 +1,11 @@
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
+use std::time::Duration;
 
 use sqlx::{
-    migrate::{AppliedMigration, Migrate, MigrateError, Migrator},
-    query, query_scalar, PgConnection, PgPool,
+    migrate::{AppliedMigration, Migrate, MigrateError, Migration, Migrator},
+    query, query_scalar, Connection, PgConnection, PgPool,
 };
 use tracing::{error, info, warn};
 
@@ -18,6 +19,7 @@ const USAGE_SETTLEMENT_DASHBOARD_INDEX_MIGRATION_VERSION: i64 = 20260715130000;
 const USAGE_STALE_PENDING_CLEANUP_INDEX_MIGRATION_VERSION: i64 = 20260720000000;
 const WALLET_DAILY_USAGE_SNAPSHOT_TIME_INDEX_MIGRATION_VERSION: i64 = 20261124000000;
 const WALLET_DAILY_USAGE_LEGACY_TIME_INDEX_MIGRATION_VERSION: i64 = 20261124000100;
+const HOURLY_USER_TOTALS_MIGRATION_VERSION: i64 = 20261125000000;
 const INVALID_CONCURRENT_INDEX_EXISTS_SQL: &str = r#"
 SELECT EXISTS (
     SELECT 1
@@ -181,7 +183,7 @@ async fn run_migrations_locked(
             "applying database migration"
         );
         repair_invalid_concurrent_index(conn, migration.version).await?;
-        let elapsed = conn.apply(migration).await?;
+        let elapsed = apply_migration(conn, migration).await?;
         info!(
             current,
             total = pending_migrations.len(),
@@ -198,6 +200,28 @@ async fn run_migrations_locked(
         "database migrations complete"
     );
     Ok(())
+}
+
+async fn apply_migration(
+    conn: &mut PgConnection,
+    migration: &Migration,
+) -> Result<Duration, MigrateError> {
+    let mut lock_retries = 50;
+    loop {
+        let result = conn.apply(migration).await;
+        let lock_unavailable = matches!(
+            &result,
+            Err(MigrateError::ExecuteMigration(sqlx::Error::Database(error), HOURLY_USER_TOTALS_MIGRATION_VERSION))
+                if error.code().as_deref() == Some("55P03")
+        );
+        if !lock_unavailable || lock_retries == 0 {
+            return result;
+        }
+        lock_retries -= 1;
+        // Flush the failed migration's rollback before waiting for another attempt.
+        conn.ping().await?;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 async fn repair_invalid_concurrent_index(

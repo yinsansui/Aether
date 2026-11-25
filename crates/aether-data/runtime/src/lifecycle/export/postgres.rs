@@ -433,7 +433,13 @@ async fn export_postgres_auxiliary_records(
         .await
         .map_sql_err()?;
         for row in rows {
-            let payload = row.try_get::<Value, _>("payload").map_sql_err()?;
+            let mut payload = row.try_get::<Value, _>("payload").map_sql_err()?;
+            if let (Some(column), Some(object)) = (
+                local_hourly_user_totals_column(table.name),
+                payload.as_object_mut(),
+            ) {
+                object.remove(column);
+            }
             let id = auxiliary_row_id(*table, &payload)?;
             records.push(DataExportRecord::row(
                 ExportDomain::Auxiliary,
@@ -443,6 +449,14 @@ async fn export_postgres_auxiliary_records(
         }
     }
     Ok(())
+}
+
+fn local_hourly_user_totals_column(table_name: &str) -> Option<&'static str> {
+    match table_name {
+        "stats_hourly" => Some("user_totals_row_count"),
+        "stats_hourly_user" => Some("total_tokens"),
+        _ => None,
+    }
 }
 
 fn postgres_export_id_sql(domain: ExportDomain, id_column: &str) -> String {
@@ -885,8 +899,15 @@ async fn import_postgres_auxiliary_row(
     column_cache: &mut BTreeMap<String, PostgresImportColumns>,
     options: DataImportOptions,
 ) -> Result<(), DataLayerError> {
-    let (table_name, payload) = domain_payload_table(row, "auxiliary", None)?;
+    let (table_name, mut payload) = domain_payload_table(row, "auxiliary", None)?;
     let table = auxiliary_table(&table_name)?;
+    if let (Some(column), Some(object)) = (
+        local_hourly_user_totals_column(table.name),
+        payload.as_object_mut(),
+    ) {
+        // The destination's facts can differ even when the hour and row ID match.
+        object.insert(column.to_string(), Value::Null);
+    }
     let target_table = format!("public.{}", postgres_quote_identifier(table.name)?);
     let target_columns = postgres_import_columns_cached(tx, column_cache, &target_table).await?;
     import_postgres_row(
